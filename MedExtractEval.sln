@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35825.156
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MedExtractEval", "MedExtractEval\MedExtractEval.csproj", "{08D8A741-528E-4F88-A96F-052D06A5D262}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MedExtractEval.Shared", "MedExtractEval.Shared\MedExtractEval.Shared.csproj", "{FED9A2A0-5CAE-44C4-B439-63FA50C348F3}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{08D8A741-528E-4F88-A96F-052D06A5D262}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{08D8A741-528E-4F88-A96F-052D06A5D262}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{08D8A741-528E-4F88-A96F-052D06A5D262}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{08D8A741-528E-4F88-A96F-052D06A5D262}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FED9A2A0-5CAE-44C4-B439-63FA50C348F3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FED9A2A0-5CAE-44C4-B439-63FA50C348F3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FED9A2A0-5CAE-44C4-B439-63FA50C348F3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FED9A2A0-5CAE-44C4-B439-63FA50C348F3}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {53B17298-652B-436C-9E2B-0D8E7082B6BA}
+	EndGlobalSection
+EndGlobal

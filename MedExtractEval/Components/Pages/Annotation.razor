@@ -1,0 +1,383 @@
+﻿@page "/annotation"
+@using System.ComponentModel.DataAnnotations
+@inject IAnnotationAppService AnnotationService
+@using System.Security.Claims
+@using MedExtractEval.DTOs
+@using MedExtractEval.Services
+@inject AuthenticationStateProvider AuthStateProvider
+
+<h3 class="mb-3">Annotation</h3>
+@if (Case is null)
+{
+    <div class="alert alert-secondary">Loading…</div>
+    return;
+}
+else
+{
+    <div class="container-fluid px-0">
+        <div class="row g-3">
+
+            <!-- Left: Raw report text -->
+            <div class="col-12 col-lg-8">
+                <div class="card shadow-sm">
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <div class="d-flex flex-column">
+                            <div class="fw-semibold">
+                                Case #@Case.Id
+                                <span class="badge bg-secondary ms-2">@Case.TaskType</span>
+                            </div>
+                            <small class="text-muted">
+                                @(!string.IsNullOrWhiteSpace(Case.MetaInfo) ? Case.MetaInfo : "No metadata")
+                            </small>
+                        </div>
+
+                        <div class="text-end">
+                            <small class="text-muted">Assigned at</small><br />
+                            <small class="text-muted">@AssignedAt.ToString("yyyy-MM-dd HH:mm:ss")</small>
+                        </div>
+                    </div>
+
+                    <div class="card-body">
+                        <div class="mb-2 text-muted small">
+                            Please read the original text and enter your judgment. Model output is hidden to avoid bias.
+                        </div>
+
+                        <pre class="border rounded p-3 mb-0 bg-body-tertiary"
+                             style="white-space: pre-wrap; word-break: break-word; max-height: 60vh; overflow:auto;">
+                                 @Case.RawText
+                            </pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Annotation form -->
+            <div class="col-12 col-lg-4">
+                <div class="card shadow-sm">
+                    <div class="card-header">
+                        <span class="fw-semibold">Your annotation</span>
+                    </div>
+
+                    <div class="card-body">
+                        <EditForm Model="@Form" OnValidSubmit="SubmitAsync">
+                            <DataAnnotationsValidator />
+                            <ValidationSummary />
+
+                            <!-- Task-specific input -->
+                            @if (Case.TaskType == TaskTypes.LVEF)
+                            {
+                                <div class="mb-3">
+                                    <label class="form-label">LVEF (%)</label>
+                                    <InputNumber @bind-Value="Form.LvefPercent"
+                                                 class="form-control"
+                                                 placeholder="e.g., 55" />
+                                    <div class="form-text">Enter 0–100. Integer preferred.</div>
+                                </div>
+                            }
+                            else if (Case.TaskType == TaskTypes.IMT)
+                            {
+                                <div class="mb-3">
+                                    <label class="form-label">IMT (mm)</label>
+                                    <InputNumber @bind-Value="Form.ImtMm"
+                                                 class="form-control"
+                                                 step="0.01"
+                                                 placeholder="e.g., 0.80" />
+                                    <div class="form-text">Use mm. Up to 2 decimals recommended.</div>
+                                </div>
+                            }
+                            else if (Case.TaskType == TaskTypes.STENOSIS)
+                            {
+                                <div class="mb-3">
+                                    <label class="form-label">是否发生/发生过狭窄</label>
+                                    <InputSelect @bind-Value="Form.Stenosis"
+                                                 class="form-select">
+                                        <option value="">-- Select --</option>
+                                        <option value="Yes">Yes</option>
+                                        <option value="No">No</option>
+                                    </InputSelect>
+                                    <div class="form-text">Choose based on the report text.</div>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="mb-3">
+                                    <label class="form-label">Value</label>
+                                    <InputText @bind-Value="Form.FreeTextValue"
+                                               class="form-control"
+                                               placeholder="Enter value..." />
+                                    <div class="form-text">Unknown task type; free text enabled.</div>
+                                </div>
+                            }
+
+                            <!-- Special options -->
+                            <div class="mb-3">
+                                <div class="form-check">
+                                    <InputCheckbox @bind-Value="Form.CannotDetermine" class="form-check-input" id="cannotDetermine" />
+                                    <label class="form-check-label" for="cannotDetermine">无法根据文本确定</label>
+                                </div>
+                                <div class="form-check">
+                                    <InputCheckbox @bind-Value="Form.NoMentioned" class="form-check-input" id="noMentioned" />
+                                    <label class="form-check-label" for="noMentioned">报告中未提及</label>
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
+                                <label class="form-label">Optional note</label>
+                                <InputTextArea @bind-Value="Form.Note"
+                                               class="form-control"
+                                               rows="3"
+                                               placeholder="Any ambiguity, where you found the value, etc." />
+                            </div>
+
+                            <!-- Optional research add-ons -->
+                            @* <div class="row g-2 mb-3">
+                            <div class="col-6">
+                                <label class="form-label">Confidence</label>
+                                <InputSelect @bind-Value="Form.Confidence"
+                                             class="form-select">
+                                    <option value="">--</option>
+                                    <option value="1">1 (low)</option>
+                                    <option value="2">2</option>
+                                    <option value="3">3</option>
+                                    <option value="4">4</option>
+                                    <option value="5">5 (high)</option>
+                                </InputSelect>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label">Difficulty</label>
+                                <InputSelect @bind-Value="Form.Difficulty"
+                                             class="form-select">
+                                    <option value="">--</option>
+                                    <option value="1">1 (easy)</option>
+                                    <option value="2">2</option>
+                                    <option value="3">3</option>
+                                    <option value="4">4</option>
+                                    <option value="5">5 (hard)</option>
+                                </InputSelect>
+                            </div>
+                        </div> *@
+
+                            <div class="d-grid gap-2">
+                                <button type="submit" class="btn btn-primary" disabled="@IsSubmitting">
+                                    @if (IsSubmitting)
+                                    {
+                                        <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                                        <span>Submitting…</span>
+                                    }
+                                    else
+                                    {
+                                        <span>Submit</span>
+                                    }
+                                </button>
+
+                                <button type="button" class="btn btn-outline-secondary" @onclick="SkipAsync" disabled="@IsSubmitting">
+                                    Skip (cannot read now)
+                                </button>
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(StatusMessage))
+                            {
+                                <div class="alert alert-info mt-3 mb-0" role="alert">
+                                    @StatusMessage
+                                </div>
+                            }
+                        </EditForm>
+                    </div>
+
+                    <div class="card-footer text-muted small d-flex justify-content-between">
+                        <span>Rater: @CurrentRaterDisplay</span>
+                        <span>Elapsed: @ElapsedText</span>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+}
+
+@code {
+    // ---- Constants / enums ----
+    private static class TaskTypes
+    {
+        public const string LVEF = "LVEF";
+        public const string IMT = "IMT";
+        public const string STENOSIS = "STENOSIS";
+    }
+
+    // ---- Page state ----
+    private DateTime AssignedAt = DateTime.UtcNow;     // 不要 readonly，后续会更新
+    private Guid AssignmentId;                         // 服务返回的 AssignmentId
+    private int CurrentRound = 1;                      // R1/R2，仅用于显示/调试（可选）
+    private bool IsSubmitting;
+    private string? StatusMessage;
+
+    private string CurrentRaterDisplay = "(unknown)";
+
+    // Case 改成可空：加载前是 null
+    private CaseVm? Case { get; set; }
+
+    private AnnotationForm Form { get; set; } = new();
+
+    private string ElapsedText
+        => Case is null ? "-" : $"{Math.Max(0, (int)(DateTime.UtcNow - AssignedAt).TotalSeconds)}s";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadNextCaseAsync();
+    }
+
+    private async Task LoadNextCaseAsync()
+    {
+        StatusMessage = null;
+
+        var loginName = await GetLoginNameAsync();
+        CurrentRaterDisplay = loginName;
+
+        var res = await AnnotationService.AssignNextCaseAsync(loginName);
+
+        if (res is null)
+        {
+            Case = null;
+            StatusMessage = "No case available right now.";
+            return;
+        }
+
+        AssignmentId = res.AssignmentId;
+        CurrentRound = res.Round;
+        AssignedAt = DateTime.UtcNow;
+
+        Case = new CaseVm
+        {
+            Id = res.CaseId,
+            TaskType = res.TaskType,
+            MetaInfo = res.MetaInfo,
+            RawText = res.RawText
+        };
+
+        Form = new();
+        StateHasChanged();
+    }
+
+    // ---- Actions ----
+    private async Task SubmitAsync()
+    {
+        if (Case is null) return;
+
+        IsSubmitting = true;
+        StatusMessage = null;
+
+        try
+        {
+            var loginName = await GetLoginNameAsync();
+
+            // 1) 把表单值转成一个最终的 AnnotatedValue
+            var annotatedValue = BuildAnnotatedValue(Case.TaskType, Form);
+
+            var req = new SubmitAnnotationRequest(
+                AssignmentId: AssignmentId,
+                CaseId: Case.Id,
+                TaskType: Case.TaskType,
+                AnnotatedValue: annotatedValue,
+                Uncertainty: Form.Note, // 你也可以改成单独字段
+                StartedAtUtc: AssignedAt,
+                SubmittedAtUtc: DateTime.UtcNow,
+                DifficultyScore: Form.Difficulty,
+                ConfidenceScore: Form.Confidence
+            );
+
+            var resp = await AnnotationService.SubmitAsync(loginName, req);
+
+            StatusMessage = resp.Message;
+
+            // 2) 立即加载下一条
+            await LoadNextCaseAsync();
+        }
+        finally
+        {
+            IsSubmitting = false;
+        }
+    }
+
+    private async Task SkipAsync()
+    {
+        IsSubmitting = true;
+        StatusMessage = null;
+
+        try
+        {
+            // 如果你服务还没实现 Skip：先本地跳过，直接取下一条
+            // 建议后面加一个 CaseAssignment.Status = Skipped
+            StatusMessage = "Skipped. Loading next case…";
+            await LoadNextCaseAsync();
+        }
+        finally
+        {
+            IsSubmitting = false;
+        }
+    }
+
+    private static string BuildAnnotatedValue(string taskType, AnnotationForm form)
+    {
+        // 特殊选项优先
+        if (form.CannotDetermine) return "CannotDetermine";
+        if (form.NoMentioned) return "NotMentioned";
+
+        if (string.Equals(taskType, TaskTypes.LVEF, StringComparison.OrdinalIgnoreCase))
+            return form.LvefPercent?.ToString() ?? "";
+
+        if (string.Equals(taskType, TaskTypes.IMT, StringComparison.OrdinalIgnoreCase))
+            return form.ImtMm?.ToString() ?? "";
+
+        if (string.Equals(taskType, TaskTypes.STENOSIS, StringComparison.OrdinalIgnoreCase))
+            return form.Stenosis ?? "";
+
+        return form.FreeTextValue ?? "";
+    }
+
+    private async Task<string> GetLoginNameAsync()
+    {
+        var state = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = state.User;
+
+        // 1) 最常用：Identity.Name
+        var name = user.Identity?.Name;
+
+        // 2) 如果你需要 AD 的 sAMAccountName / preferred_username，可以从 claim 拿
+        // var name = user.FindFirst("preferred_username")?.Value;
+
+        return string.IsNullOrWhiteSpace(name) ? "anonymous" : name;
+    }
+
+    // ---- View models ----
+    private sealed class CaseVm
+    {
+        public Guid Id { get; set; }                 // int -> Guid
+        public string TaskType { get; set; } = "";
+        public string? MetaInfo { get; set; }
+        public string RawText { get; set; } = "";
+    }
+
+    private sealed class AnnotationForm
+    {
+        [Range(0, 100, ErrorMessage = "LVEF must be between 0 and 100.")]
+        public int? LvefPercent { get; set; }
+
+        [Range(0, 10, ErrorMessage = "IMT looks out of range (0–10mm).")]
+        public decimal? ImtMm { get; set; }
+
+        public string? Stenosis { get; set; }
+        public string? FreeTextValue { get; set; }
+
+        public bool CannotDetermine { get; set; }
+        public bool NoMentioned { get; set; }
+
+        [MaxLength(500)]
+        public string? Note { get; set; }
+
+        [Range(1, 5)]
+        public int? Confidence { get; set; }
+
+        [Range(1, 5)]
+        public int? Difficulty { get; set; }
+    }
+}
