@@ -40,15 +40,4 @@
         /// </summary>
         public DateTime? FinalizedAt { get; set; }
     }
-
-    public class CaseAssignment
-    {
-        public Guid Id { get; set; }
-        public Guid CaseId { get; set; }
-        public Guid RaterId { get; set; }
-        public int Round { get; set; }
-        public DateTime AssignedAt { get; set; }
-        public DateTime? CompletedAt { get; set; }
-        public string Status { get; set; } = "Assigned"; // Assigned / Submitted / Skipped / Expired
-    }
 }

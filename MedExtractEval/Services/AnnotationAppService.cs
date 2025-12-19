@@ -10,14 +10,23 @@ namespace MedExtractEval.Services
     {
         Task<AssignNextCaseResponse?> AssignNextCaseAsync(string loginName, CancellationToken ct = default);
         Task<SubmitAnnotationResponse> SubmitAsync(string loginName, SubmitAnnotationRequest req, CancellationToken ct = default);
+        Task<bool> ExtendLeaseAsync(string loginName, Guid assignmentId, CancellationToken ct = default);
+
     }
 
     public sealed class AnnotationAppService(IDbContextFactory<MedEvalDbContext> dbFactory) : IAnnotationAppService
     {
+        private const string StatusAssigned = "Assigned";
+        private const string StatusSubmitted = "Submitted";
+        private const string StatusExpired = "Expired";
+
         public async Task<AssignNextCaseResponse?> AssignNextCaseAsync(string loginName, CancellationToken ct = default)
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
-
+            var now = DateTime.UtcNow;
+            await db.CaseAssignments
+                .Where(a => a.Status == StatusAssigned && a.ExpiresAt != null && a.ExpiresAt <= now)
+                .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, StatusExpired).SetProperty(a => a.CompletedAt, now), ct);
             var rater = await db.Raters.SingleOrDefaultAsync(x => x.LoginName == loginName, ct);
             if (rater is null)
             {
@@ -29,49 +38,55 @@ namespace MedExtractEval.Services
 
             // 1) 优先分配 NeedR2 的 case（Round=2），且该 case 的 R1 不是当前 rater
             // 这里我们用规则：如果一个 Case 已经有人 Round=1 标注，但还没有 Round=2 标注 -> 需要R2
-            var needR2Case = await db.Cases
+            var needR2Case = db.Cases
                 .Where(c => c.FinalGoldLabel == null) // 未最终裁决
-                .Where(c =>
-                    db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1) &&
-                    !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 2) &&
+                .Where(c => db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1) && !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 2) &&
                     // 排除当前rater是R1
                     !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1 && a.RaterId == rater.Id)
                 )
-                .OrderBy(_ => Guid.NewGuid()) // 简单随机；大数据量可改成更高效随机策略
-                .FirstOrDefaultAsync(ct);
+                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 2 && a.Status == StatusAssigned && a.ExpiresAt > now));
 
-            if (needR2Case is not null)
+            var count = await needR2Case.CountAsync(ct);
+            if (count == 0) return null;
+            if (count > 0)
             {
-                var assignment = await CreateAssignmentAsync(db, needR2Case.Id, rater.Id, round: 2, ct);
-                if (assignment is null) return null; // 可能被别人抢走了，直接返回 null 让 UI 重试/再点一次
-
-                return new AssignNextCaseResponse(
-                    assignment.Id,
-                    needR2Case.Id,
-                    needR2Case.TaskType,
-                    needR2Case.RawText,
-                    needR2Case.MetaInfo,
-                    Round: 2);
+                var skip = Random.Shared.Next(count);
+                var picked = await needR2Case.Skip(skip).FirstAsync(ct);
+                if (picked is not null)
+                {
+                    var assignment = await CreateAssignmentAsync(db, picked.Id, rater.Id, round: 2, now, ct);
+                    if (assignment is not null)
+                        return new AssignNextCaseResponse(
+                            assignment.Id,
+                            picked.Id,
+                            picked.TaskType,
+                            picked.RawText,
+                            picked.MetaInfo,
+                            Round: 2);
+                }
             }
 
             // 2) 否则分配尚未被任何人 Round=1 标注的 case（Round=1）
-            var newCase = await db.Cases
+            var newCase = db.Cases
                 .Where(c => c.FinalGoldLabel == null)
                 .Where(c => !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1))
-                .OrderBy(_ => Guid.NewGuid())
-                .FirstOrDefaultAsync(ct);
+                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 1 && a.Status == StatusAssigned && a.ExpiresAt > now));
+            count = await newCase.CountAsync(ct);
+            if (count == 0) return null;
+            var newCaseSkip = Random.Shared.Next(count);
+            var newCaseEntity = await newCase.Skip(newCaseSkip).FirstAsync(ct);
 
-            if (newCase is null) return null;
+            if (newCaseEntity is null) return null;
 
-            var a1 = await CreateAssignmentAsync(db, newCase.Id, rater.Id, round: 1, ct);
+            var a1 = await CreateAssignmentAsync(db, newCaseEntity.Id, rater.Id, round: 1, now, ct);
             if (a1 is null) return null;
 
             return new AssignNextCaseResponse(
                 a1.Id,
-                newCase.Id,
-                newCase.TaskType,
-                newCase.RawText,
-                newCase.MetaInfo,
+                newCaseEntity.Id,
+                newCaseEntity.TaskType,
+                newCaseEntity.RawText,
+                newCaseEntity.MetaInfo,
                 Round: 1);
         }
 
@@ -86,8 +101,21 @@ namespace MedExtractEval.Services
             if (assignment is null || assignment.RaterId != rater.Id || assignment.CaseId != req.CaseId)
                 return new SubmitAnnotationResponse(false, "Invalid assignment.", false);
 
-            if (assignment.Status == "Submitted")
+            if (assignment.Status == StatusSubmitted)
                 return new SubmitAnnotationResponse(true, "Already submitted.", false); // 幂等
+
+            var now = DateTime.UtcNow;
+            if (assignment.Status != StatusAssigned)
+                return new SubmitAnnotationResponse(false, $"Assignment is {assignment.Status}.", false);
+
+            if (assignment.ExpiresAt <= now)
+            {
+                // 可选：顺手标记为 Expired，避免再次判断
+                assignment.Status = StatusExpired;
+                assignment.CompletedAt = now;
+                await db.SaveChangesAsync(ct);
+                return new SubmitAnnotationResponse(false, "Assignment expired. Please reload and get a new case.", false);
+            }
 
             // 2) 校验 case/task type
             var c = await db.Cases.SingleAsync(x => x.Id == req.CaseId, ct);
@@ -117,7 +145,7 @@ namespace MedExtractEval.Services
             db.Annotations.Add(annotation);
 
             // 5) 更新 assignment 状态
-            assignment.Status = "Submitted";
+            assignment.Status = StatusSubmitted;
             assignment.CompletedAt = DateTime.UtcNow;
 
             // 6) 是否需要触发第二人复核：这里按你原始规则“与模型不一致才触发”
@@ -132,42 +160,31 @@ namespace MedExtractEval.Services
             return new SubmitAnnotationResponse(true, "Saved.", triggeredR2);
         }
 
+        public async Task<bool> ExtendLeaseAsync(string loginName, Guid assignmentId, CancellationToken ct = default)
+        {
+            await using var db = await dbFactory.CreateDbContextAsync(ct);
+            var rater = await db.Raters.SingleAsync(x => x.LoginName == loginName, ct);
+
+            var now = DateTime.UtcNow;
+            var updated = await db.CaseAssignments
+                .Where(a => a.Id == assignmentId
+                         && a.RaterId == rater.Id
+                         && a.Status == StatusAssigned
+                         && a.ExpiresAt > now)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(a => a.LastSeenAt, now)
+                    .SetProperty(a => a.ExpiresAt, now.AddMinutes(20)), ct);
+
+            return updated == 1;
+        }
+
         private static string NormalizeAnnotatedValue(string value)
         {
-            value = value.Trim();
-
-            //if (string.Equals(taskType, "STENOSIS", StringComparison.OrdinalIgnoreCase))
-            //{
-            //    // 接受 yes/no/true/false/有/无
-            //    var v = value.ToLowerInvariant();
-            //    if (v is "yes" or "y" or "true" or "有" or "存在") return "Yes";
-            //    if (v is "no" or "n" or "false" or "无" or "不存在") return "No";
-            //    return value; // 保留原样，后续可标记为 Uncertainty
-            //}
-
-            //if (string.Equals(taskType, "LVEF", StringComparison.OrdinalIgnoreCase))
-            //{
-            //    // 统一成 0-100 的整数
-            //    // 允许输入 "0.65" -> 65
-            //    if (double.TryParse(value.Replace("%", ""), out var d))
-            //    {
-            //        if (d <= 1.0 && d >= 0) d *= 100.0;
-            //        return Math.Round(d).ToString("0");
-            //    }
-            //}
-
-            //if (string.Equals(taskType, "IMT", StringComparison.OrdinalIgnoreCase))
-            //{
-            //    // 统一成两位小数
-            //    if (double.TryParse(value, out var d))
-            //        return d.ToString("0.00");
-            //}
-
-            return value;
+            return value.Trim();
         }
 
         private static async Task<CaseAssignment?> CreateAssignmentAsync(
-            MedEvalDbContext db, Guid caseId, Guid raterId, int round, CancellationToken ct)
+            MedEvalDbContext db, Guid caseId, Guid raterId, int round, DateTime now, CancellationToken ct)
         {
             var assignment = new CaseAssignment
             {
@@ -175,8 +192,10 @@ namespace MedExtractEval.Services
                 CaseId = caseId,
                 RaterId = raterId,
                 Round = round,
-                AssignedAt = DateTime.UtcNow,
-                Status = "Assigned"
+                AssignedAt = now,
+                ExpiresAt = now.AddMinutes(20),
+                Status = StatusAssigned,
+                LastSeenAt = now
             };
 
             db.CaseAssignments.Add(assignment);

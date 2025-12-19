@@ -53,8 +53,14 @@
                     <!-- Right: Annotation form -->
                     <div class="col-12 col-lg-4">
                         <div class="card shadow-sm">
-                            <div class="card-header">
+                            <div class="card-header d-flex align-items-center justify-content-between">
                                 <span class="fw-semibold">Your annotation</span>
+
+                                <span class="d-inline-flex align-items-center gap-2 small">
+                                    <span class="rounded-circle @( _leaseOk ? "bg-success" : "bg-danger")"
+                                          style="width:10px;height:10px;display:inline-block;"></span>
+                                    <span class="text-muted">@(_leaseOk ? "Lease OK" : "Lease expired")</span>
+                                </span>
                             </div>
 
                             <div class="card-body">
@@ -222,8 +228,12 @@
 
     private string CurrentRaterDisplay = "(unknown)";
 
-    private PeriodicTimer? _timer;
-    private CancellationTokenSource? _cts;
+    private PeriodicTimer? _uiTimer;
+    private PeriodicTimer? _leaseTimer;
+    private CancellationTokenSource? _uiCts;
+    private CancellationTokenSource? _leaseCts;
+    private bool _leaseOk = true;
+    private DateTime _leaseExpiresAtLocal; // 可选：用于显示“租约到期时间”
 
     // Case 改成可空：加载前是 null
     private CaseVm? Case { get; set; }
@@ -234,31 +244,105 @@
 
     protected override async Task OnInitializedAsync()
     {
-        _cts = new CancellationTokenSource();
-        _timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        _uiCts = new CancellationTokenSource();
+        _uiTimer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        _ = RunUiTimerAsync(_uiCts.Token);
 
-        _ = RunTimerAsync(_cts.Token);
-        await LoadNextCaseAsync();
+        await LoadNextCaseAsync();     // 这里面拿到 AssignmentId 之后再启动 Lease
+        StartLeaseLoop();
     }
 
-    private async Task RunTimerAsync(CancellationToken token)
+    private async Task RunUiTimerAsync(CancellationToken token)
     {
         try
         {
-            while (_timer is not null && await _timer.WaitForNextTickAsync(token))
+            while (_uiTimer is not null && await _uiTimer.WaitForNextTickAsync(token))
             {
-                // 只做 UI 刷新，不做任何重计算/IO
                 await InvokeAsync(StateHasChanged);
             }
         }
         catch (OperationCanceledException) { }
     }
 
+    private void StartLeaseLoop()
+    {
+        StopLeaseLoop();
+
+        // 没有 case 就不启
+        if (Case is null || AssignmentId == Guid.Empty) return;
+
+        _leaseOk = true;
+        _leaseCts = new CancellationTokenSource();
+        _leaseTimer = new PeriodicTimer(TimeSpan.FromSeconds(10)); // 10~15 秒一次即可
+
+        _ = RunLeaseLoopAsync(_leaseCts.Token);
+    }
+
+    private void StopLeaseLoop()
+    {
+        try { _leaseCts?.Cancel(); } catch { }
+        _leaseTimer?.Dispose();
+        _leaseCts?.Dispose();
+        _leaseTimer = null;
+        _leaseCts = null;
+    }
+
+    private async Task RunLeaseLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (_leaseTimer is not null && await _leaseTimer.WaitForNextTickAsync(token))
+            {
+                // 没有任务就不续
+                if (Case is null || AssignmentId == Guid.Empty) continue;
+
+                // 提交中也暂时别续，避免并发噪音（可选）
+                if (IsSubmitting) continue;
+
+                var loginName = await GetLoginNameAsync();
+
+                bool ok = await AnnotationService.ExtendLeaseAsync(loginName, AssignmentId, token);
+
+                if (!ok)
+                {
+                    _leaseOk = false;
+
+                    await InvokeAsync(() =>
+                    {
+                        StatusMessage = "任务已过期或被回收，请重新获取任务。";
+                        // 这里别直接 LoadNextCaseAsync()，避免循环里叠加 await
+                    });
+
+                    // 退出 loop，交给 UI/用户触发刷新，或你也可以自动 reload：
+                    // await InvokeAsync(async () => await LoadNextCaseAsync());
+                    // StartLeaseLoop();
+                    break;
+                }
+                else
+                {
+                    _leaseOk = true;
+
+                    // 可选：你如果在 AssignNextCaseResponse 里带了 ExpiresAtUtc，可以显示它
+                    // _leaseExpiresAtLocal = res.ExpiresAtUtc.ToLocalTime();
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            _leaseOk = false;
+            await InvokeAsync(() => StatusMessage = $"Lease heartbeat error: {ex.Message}");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
-        _cts?.Cancel();
-        _timer?.Dispose();
-        _cts?.Dispose();
+        try { _uiCts?.Cancel(); } catch { }
+        _uiTimer?.Dispose();
+        _uiCts?.Dispose();
+
+        StopLeaseLoop();
+
         await Task.CompletedTask;
     }
 
@@ -275,13 +359,14 @@
         {
             Case = null;
             StatusMessage = "No case available right now.";
+            StopLeaseLoop();
             return;
         }
 
         AssignmentId = res.AssignmentId;
         CurrentRound = res.Round;
         AssignedAt = DateTime.UtcNow;
-
+        StartLeaseLoop();
         Case = new CaseVm
         {
             Id = res.CaseId,
@@ -298,7 +383,7 @@
     private async Task SubmitAsync()
     {
         if (Case is null) return;
-
+        StopLeaseLoop();
         IsSubmitting = true;
         StatusMessage = null;
 
