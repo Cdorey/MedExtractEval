@@ -45,7 +45,7 @@ namespace MedExtractEval.Data
                 .IsUnique();
 
             b.Entity<CaseAssignment>()
-             .HasIndex(x => new { x.CaseId, x.Round })
+             .HasIndex(x => new { x.CaseItemId, x.Round })
              .IsUnique()
              .HasFilter("[Status] = 'Assigned'");
         }

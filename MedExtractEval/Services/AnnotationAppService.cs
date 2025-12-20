@@ -28,6 +28,7 @@ namespace MedExtractEval.Services
                 .Where(a => a.Status == StatusAssigned && a.ExpiresAt != null && a.ExpiresAt <= now)
                 .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, StatusExpired).SetProperty(a => a.CompletedAt, now), ct);
             var rater = await db.Raters.SingleOrDefaultAsync(x => x.LoginName == loginName, ct);
+
             if (rater is null)
             {
                 // 也可以自动创建 rater
@@ -44,10 +45,9 @@ namespace MedExtractEval.Services
                     // 排除当前rater是R1
                     !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1 && a.RaterId == rater.Id)
                 )
-                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 2 && a.Status == StatusAssigned && a.ExpiresAt > now));
+                .Where(c => !db.CaseAssignments.Any(a => a.CaseItemId == c.Id && a.Round == 2 && a.Status == StatusAssigned && a.ExpiresAt > now));
 
             var count = await needR2Case.CountAsync(ct);
-            if (count == 0) return null;
             if (count > 0)
             {
                 var skip = Random.Shared.Next(count);
@@ -70,7 +70,7 @@ namespace MedExtractEval.Services
             var newCase = db.Cases
                 .Where(c => c.FinalGoldLabel == null)
                 .Where(c => !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1))
-                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 1 && a.Status == StatusAssigned && a.ExpiresAt > now));
+                .Where(c => !db.CaseAssignments.Any(a => a.CaseItemId == c.Id && a.Round == 1 && a.Status == StatusAssigned && a.ExpiresAt > now));
             count = await newCase.CountAsync(ct);
             if (count == 0) return null;
             var newCaseSkip = Random.Shared.Next(count);
@@ -98,7 +98,7 @@ namespace MedExtractEval.Services
 
             // 1) 校验 assignment 属于当前用户且未提交
             var assignment = await db.CaseAssignments.SingleOrDefaultAsync(x => x.Id == req.AssignmentId, ct);
-            if (assignment is null || assignment.RaterId != rater.Id || assignment.CaseId != req.CaseId)
+            if (assignment is null || assignment.RaterId != rater.Id || assignment.CaseItemId != req.CaseId)
                 return new SubmitAnnotationResponse(false, "Invalid assignment.", false);
 
             if (assignment.Status == StatusSubmitted)
@@ -147,6 +147,7 @@ namespace MedExtractEval.Services
             // 5) 更新 assignment 状态
             assignment.Status = StatusSubmitted;
             assignment.CompletedAt = DateTime.UtcNow;
+            assignment.AnnotationId = annotation.Id;
 
             // 6) 是否需要触发第二人复核：这里按你原始规则“与模型不一致才触发”
             // 但你当前没提供 ModelPrediction 类，所以这里给你占位：
@@ -189,7 +190,7 @@ namespace MedExtractEval.Services
             var assignment = new CaseAssignment
             {
                 Id = Guid.NewGuid(),
-                CaseId = caseId,
+                CaseItemId = caseId,
                 RaterId = raterId,
                 Round = round,
                 AssignedAt = now,
