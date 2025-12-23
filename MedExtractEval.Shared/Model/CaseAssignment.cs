@@ -3,8 +3,8 @@
     public class CaseAssignment
     {
         public Guid Id { get; set; }
-        public Guid CaseItemId { get; set; }
-        public CaseItem? CaseItem { get; set; }
+        public Guid CaseId { get; set; }
+        public CaseItem? Case { get; set; }
         public Guid RaterId { get; set; }
         public Rater? Rater { get; set; }
         public Guid? AnnotationId { get; set; }

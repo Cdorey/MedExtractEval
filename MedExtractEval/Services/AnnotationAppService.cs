@@ -45,7 +45,7 @@ namespace MedExtractEval.Services
                     // 排除当前rater是R1
                     !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1 && a.RaterId == rater.Id)
                 )
-                .Where(c => !db.CaseAssignments.Any(a => a.CaseItemId == c.Id && a.Round == 2 && a.Status == StatusAssigned && a.ExpiresAt > now));
+                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 2 && a.Status == StatusAssigned && a.ExpiresAt > now));
 
             var count = await needR2Case.CountAsync(ct);
             if (count > 0)
@@ -70,7 +70,7 @@ namespace MedExtractEval.Services
             var newCase = db.Cases
                 .Where(c => c.FinalGoldLabel == null)
                 .Where(c => !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1))
-                .Where(c => !db.CaseAssignments.Any(a => a.CaseItemId == c.Id && a.Round == 1 && a.Status == StatusAssigned && a.ExpiresAt > now));
+                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 1 && a.Status == StatusAssigned && a.ExpiresAt > now));
             count = await newCase.CountAsync(ct);
             if (count == 0) return null;
             var newCaseSkip = Random.Shared.Next(count);
@@ -98,7 +98,7 @@ namespace MedExtractEval.Services
 
             // 1) 校验 assignment 属于当前用户且未提交
             var assignment = await db.CaseAssignments.SingleOrDefaultAsync(x => x.Id == req.AssignmentId, ct);
-            if (assignment is null || assignment.RaterId != rater.Id || assignment.CaseItemId != req.CaseId)
+            if (assignment is null || assignment.RaterId != rater.Id || assignment.CaseId != req.CaseId)
                 return new SubmitAnnotationResponse(false, "Invalid assignment.", false);
 
             if (assignment.Status == StatusSubmitted)
@@ -190,7 +190,7 @@ namespace MedExtractEval.Services
             var assignment = new CaseAssignment
             {
                 Id = Guid.NewGuid(),
-                CaseItemId = caseId,
+                CaseId = caseId,
                 RaterId = raterId,
                 Round = round,
                 AssignedAt = now,

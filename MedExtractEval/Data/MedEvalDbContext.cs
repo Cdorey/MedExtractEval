@@ -28,7 +28,7 @@ namespace MedExtractEval.Data
                 .IsUnique();
 
             b.Entity<Annotation>()
-                .HasOne(a => a.CaseItem)
+                .HasOne(a => a.Case)
                 .WithMany()
                 .HasForeignKey(a => a.CaseId)
                 .OnDelete(DeleteBehavior.Restrict);
@@ -45,7 +45,7 @@ namespace MedExtractEval.Data
                 .IsUnique();
 
             b.Entity<CaseAssignment>()
-             .HasIndex(x => new { x.CaseItemId, x.Round })
+             .HasIndex(x => new { x.CaseId, x.Round })
              .IsUnique()
              .HasFilter("[Status] = 'Assigned'");
         }
