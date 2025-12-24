@@ -18,123 +18,219 @@ namespace MedExtractEval.Services
     {
         private const string StatusAssigned = "Assigned";
         private const string StatusSubmitted = "Submitted";
-        private const string StatusExpired = "Expired";
-
+        //private const string StatusExpired = "Expired";
+        private const string StatusReady = "Ready";
+        private const string StatusSkipped = "Skipped";
         public async Task<AssignNextCaseResponse?> AssignNextCaseAsync(string loginName, CancellationToken ct = default)
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
             var now = DateTime.UtcNow;
-            await db.CaseAssignments
-                .Where(a => a.Status == StatusAssigned && a.ExpiresAt != null && a.ExpiresAt <= now)
-                .ExecuteUpdateAsync(s => s.SetProperty(a => a.Status, StatusExpired).SetProperty(a => a.CompletedAt, now), ct);
-            var rater = await db.Raters.SingleOrDefaultAsync(x => x.LoginName == loginName, ct);
 
+            // 0) 确保 rater 存在（这里仍然是 Create + SaveChanges）
+            var rater = await db.Raters.SingleOrDefaultAsync(x => x.LoginName == loginName, ct);
             if (rater is null)
             {
-                // 也可以自动创建 rater
-                rater = new Rater { Id = Guid.NewGuid(), LoginName = loginName, Name = loginName, IsAdmin = false };
+                rater = new Rater
+                {
+                    Id = Guid.NewGuid(),
+                    LoginName = loginName,
+                    Name = loginName,
+                    IsAdmin = false
+                };
                 db.Raters.Add(rater);
                 await db.SaveChangesAsync(ct);
             }
 
-            // 1) 优先分配 NeedR2 的 case（Round=2），且该 case 的 R1 不是当前 rater
-            // 这里我们用规则：如果一个 Case 已经有人 Round=1 标注，但还没有 Round=2 标注 -> 需要R2
-            var needR2Case = db.Cases
-                .Where(c => c.FinalGoldLabel == null) // 未最终裁决
-                .Where(c => db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1) && !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 2) &&
-                    // 排除当前rater是R1
-                    !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1 && a.RaterId == rater.Id)
-                )
-                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 2 && a.Status == StatusAssigned && a.ExpiresAt > now));
+            // 1) 回收过期任务：Assigned & ExpiresAt<=now -> Ready，并清空租约字段
+            //    （注意：如果你想保留审计痕迹，用 StatusExpired 另存也行；这里按你想法直接回到 Ready）
+            await db.CaseAssignments
+                .Where(a => a.Status == StatusAssigned && a.ExpiresAt != null && a.ExpiresAt <= now)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(a => a.Status, StatusReady)
+                    .SetProperty(a => a.RaterId, (Guid?)null)
+                    .SetProperty(a => a.AssignedAt, (DateTime?)null)   // 如果你的 AssignedAt 不可空，就别清空
+                    .SetProperty(a => a.ExpiresAt, (DateTime?)null)
+                    .SetProperty(a => a.LastSeenAt, (DateTime?)null)
+                    .SetProperty(a => a.CompletedAt, now)
+                    .SetProperty(a => a.Attempt, a => a.Attempt + 1)
+                , ct);
 
-            var count = await needR2Case.CountAsync(ct);
-            if (count > 0)
+            // 2) 当前 rater 是否已有未完成任务（Assigned & 未过期）？
+            //    如果有：续租并返回这条（保证“刷新页面不会换题”）
+            var existingId = await db.CaseAssignments
+                .Where(a => a.Status == StatusAssigned
+                         && a.RaterId == rater.Id
+                         && a.ExpiresAt != null
+                         && a.ExpiresAt > now)
+                .OrderByDescending(a => a.AssignedAt) // 取最新一条
+                .Select(a => a.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (existingId != Guid.Empty)
             {
-                var skip = Random.Shared.Next(count);
-                var picked = await needR2Case.Skip(skip).FirstAsync(ct);
-                if (picked is not null)
+                // 续租：原子 update（防止并发场景）
+                var renewed = await db.CaseAssignments
+                    .Where(a => a.Id == existingId
+                             && a.Status == StatusAssigned
+                             && a.RaterId == rater.Id
+                             && a.ExpiresAt > now)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.LastSeenAt, now)
+                        .SetProperty(a => a.ExpiresAt, now.AddMinutes(20)), ct);
+
+                if (renewed == 1)
                 {
-                    var assignment = await CreateAssignmentAsync(db, picked.Id, rater.Id, round: 2, now, ct);
-                    if (assignment is not null)
-                        return new AssignNextCaseResponse(
-                            assignment.Id,
-                            picked.Id,
-                            picked.TaskType,
-                            picked.RawText,
-                            picked.MetaInfo,
-                            Round: 2);
+                    // 回读需要返回的字段
+                    var payload = await db.CaseAssignments
+                        .Where(a => a.Id == existingId)
+                        .Select(a => new
+                        {
+                            a.Id,
+                            a.CaseId,
+                            a.Round
+                        })
+                        .SingleAsync(ct);
+
+                    var c = await db.Cases
+                        .Where(x => x.Id == payload.CaseId)
+                        .Select(x => new { x.Id, x.TaskType, x.RawText, x.MetaInfo })
+                        .SingleAsync(ct);
+
+                    return new AssignNextCaseResponse(
+                        AssignmentId: payload.Id,
+                        CaseId: c.Id,
+                        TaskType: c.TaskType,
+                        RawText: c.RawText,
+                        MetaInfo: c.MetaInfo,
+                        Round: payload.Round);
                 }
+                // 如果 renewed != 1，说明这条在你续租前刚好过期被回收了，继续往下分配新题
             }
 
-            // 2) 否则分配尚未被任何人 Round=1 标注的 case（Round=1）
-            var newCase = db.Cases
-                .Where(c => c.FinalGoldLabel == null)
-                .Where(c => !db.Annotations.Any(a => a.CaseId == c.Id && a.Round == 1))
-                .Where(c => !db.CaseAssignments.Any(a => a.CaseId == c.Id && a.Round == 1 && a.Status == StatusAssigned && a.ExpiresAt > now));
-            count = await newCase.CountAsync(ct);
-            if (count == 0) return null;
-            var newCaseSkip = Random.Shared.Next(count);
-            var newCaseEntity = await newCase.Skip(newCaseSkip).FirstAsync(ct);
+            // 3) 尝试分配 Round=2（NeedR2）
+            //    我这里不再从 Cases 里随机抽一条再插入 assignment，
+            //    而是：从 CaseAssignments(Ready) 中挑一条 Round=2 来 claim（更符合你“预生成任务”的思路）
+            //    如果你还没有“预生成 Ready 任务”，也可以在这里临时生成 Ready，再 claim；但你说要服务A预生成，就按这个写。
+            var r2 = await TryClaimReadyAssignmentAsync(db,
+                raterId: rater.Id,
+                round: 2,
+                now: now,
+                // 只允许领取 NeedR2 且 R1 不是自己
+                extraFilter: q => q.Where(a =>
+                    db.Annotations.Any(x => x.CaseId == a.CaseId && x.Round == 1) &&
+                    !db.Annotations.Any(x => x.CaseId == a.CaseId && x.Round == 2) &&
+                    !db.Annotations.Any(x => x.CaseId == a.CaseId && x.Round == 1 && x.RaterId == rater.Id)
+                ),
+                ct);
 
-            if (newCaseEntity is null) return null;
+            if (r2 is not null) return r2;
 
-            var a1 = await CreateAssignmentAsync(db, newCaseEntity.Id, rater.Id, round: 1, now, ct);
-            if (a1 is null) return null;
+            // 4) 再尝试分配 Round=1（尚未做过 R1）
+            var r1 = await TryClaimReadyAssignmentAsync(db,
+                raterId: rater.Id,
+                round: 1,
+                now: now,
+                extraFilter: q => q.Where(a =>
+                    !db.Annotations.Any(x => x.CaseId == a.CaseId && x.Round == 1)
+                ),
+                ct);
 
-            return new AssignNextCaseResponse(
-                a1.Id,
-                newCaseEntity.Id,
-                newCaseEntity.TaskType,
-                newCaseEntity.RawText,
-                newCaseEntity.MetaInfo,
-                Round: 1);
+            if (r1 is not null) return r1;
+
+            // 5) 都没有
+            return null;
         }
 
-        public async Task<SubmitAnnotationResponse> SubmitAsync(string loginName, SubmitAnnotationRequest req, CancellationToken ct = default)
+
+        public async Task<SubmitAnnotationResponse> SubmitAsync(string loginName,
+                                                                SubmitAnnotationRequest req,
+                                                                CancellationToken ct = default)
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
+            var now = DateTime.UtcNow;
 
-            var rater = await db.Raters.SingleAsync(x => x.LoginName == loginName, ct);
+            var raterId = await db.Raters
+                .Where(x => x.LoginName == loginName)
+                .Select(x => x.Id)
+                .SingleAsync(ct);
 
-            // 1) 校验 assignment 属于当前用户且未提交
-            var assignment = await db.CaseAssignments.SingleOrDefaultAsync(x => x.Id == req.AssignmentId, ct);
-            if (assignment is null || assignment.RaterId != rater.Id || assignment.CaseId != req.CaseId)
+            // 1) 先检查“是否已提交”（幂等）：如果 assignment 已是 Submitted，直接返回
+            //    这里用轻量查询避免把整行 tracking 进来
+            var status = await db.CaseAssignments
+                .Where(a => a.Id == req.AssignmentId && a.RaterId == raterId)
+                .Select(a => a.Status)
+                .SingleOrDefaultAsync(ct);
+
+            if (status is null)
                 return new SubmitAnnotationResponse(false, "Invalid assignment.", false);
 
-            if (assignment.Status == StatusSubmitted)
-                return new SubmitAnnotationResponse(true, "Already submitted.", false); // 幂等
+            if (status == StatusSubmitted)
+                return new SubmitAnnotationResponse(true, "Already submitted.", false);
 
-            var now = DateTime.UtcNow;
-            if (assignment.Status != StatusAssigned)
-                return new SubmitAnnotationResponse(false, $"Assignment is {assignment.Status}.", false);
+            // 2) 过期回收：如果这条任务已过期且仍是 Assigned，则原子重置为 Ready（并清空租约信息）
+            //    注意：这里同时校验属于当前用户 + caseId 匹配，避免用户用别人的 assignmentId 提交
+            var expiredReset = await db.CaseAssignments
+                .Where(a => a.Id == req.AssignmentId
+                         && a.CaseId == req.CaseId
+                         && a.RaterId == raterId
+                         && a.Status == StatusAssigned
+                         && a.ExpiresAt != null
+                         && a.ExpiresAt <= now)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(a => a.Status, StatusReady)
+                    .SetProperty(a => a.RaterId, (Guid?)null)
+                    .SetProperty(a => a.AssignedAt, (DateTime?)null)   // 如果不可空就删掉这行
+                    .SetProperty(a => a.ExpiresAt, (DateTime?)null)
+                    .SetProperty(a => a.LastSeenAt, (DateTime?)null)
+                    .SetProperty(a => a.CompletedAt, (DateTime?)null)
+                    .SetProperty(a => a.AnnotationId, (Guid?)null)
+                    .SetProperty(a => a.Attempt, a => a.Attempt + 1),
+                    ct);
 
-            if (assignment.ExpiresAt <= now)
-            {
-                // 可选：顺手标记为 Expired，避免再次判断
-                assignment.Status = StatusExpired;
-                assignment.CompletedAt = now;
-                await db.SaveChangesAsync(ct);
+            if (expiredReset == 1)
                 return new SubmitAnnotationResponse(false, "Assignment expired. Please reload and get a new case.", false);
-            }
 
-            // 2) 校验 case/task type
-            var c = await db.Cases.SingleAsync(x => x.Id == req.CaseId, ct);
+            // 3) 仍有效：验证这条 assignment 现在必须是 Assigned + 属于当前用户 + 未过期
+            //    这里用投影把后面要用的 Round 一起拿到
+            var arow = await db.CaseAssignments
+                .Where(a => a.Id == req.AssignmentId
+                         && a.CaseId == req.CaseId
+                         && a.RaterId == raterId
+                         && a.Status == StatusAssigned
+                         && a.ExpiresAt != null
+                         && a.ExpiresAt > now)
+                .Select(a => new { a.Round })
+                .SingleOrDefaultAsync(ct);
+
+            if (arow is null)
+                return new SubmitAnnotationResponse(false, "Invalid or no longer active assignment.", false);
+
+            // 4) 校验 case/task type（只查必要字段）
+            var c = await db.Cases
+                .Where(x => x.Id == req.CaseId)
+                .Select(x => new { x.Id, x.TaskType })
+                .SingleOrDefaultAsync(ct);
+
+            if (c is null)
+                return new SubmitAnnotationResponse(false, "Case not found.", false);
+
             if (!string.Equals(c.TaskType, req.TaskType, StringComparison.OrdinalIgnoreCase))
                 return new SubmitAnnotationResponse(false, "Task type mismatch.", false);
 
-            // 3) Normalize（建议你以后把 Normalize/规则抽到 EvaluationRule）
+            // 5) Normalize
             var normalized = NormalizeAnnotatedValue(req.AnnotatedValue);
 
-            // 4) 写 annotation（利用唯一索引防双写）
+            // 6) 写 annotation
+            var annotationId = Guid.NewGuid();
             var annotation = new Annotation
             {
-                Id = Guid.NewGuid(),
+                Id = annotationId,
                 CaseId = c.Id,
                 TaskType = c.TaskType,
                 AnnotatedValue = normalized,
-                Uncertainty = req.Uncertainty,
-                RaterId = rater.Id,
-                Round = assignment.Round,
+                Uncertainty = req.Note,
+                RaterId = raterId,
+                Round = arow.Round,
                 StartedAt = req.StartedAtUtc,
                 SubmittedAt = req.SubmittedAtUtc,
                 CreatedAt = req.SubmittedAtUtc,
@@ -142,35 +238,60 @@ namespace MedExtractEval.Services
                 ConfidenceScore = req.ConfidenceScore
             };
 
-            db.Annotations.Add(annotation);
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
 
-            // 5) 更新 assignment 状态
-            assignment.Status = StatusSubmitted;
-            assignment.CompletedAt = DateTime.UtcNow;
-            assignment.AnnotationId = annotation.Id;
+            try
+            {
+                // 1) 先再做一次“仍有效”的校验（或者把校验和更新合并）
+                // 2) 先写 annotation
+                db.Annotations.Add(annotation);
+                await db.SaveChangesAsync(ct); // 先拿到 annotationId 确保落库
 
-            // 6) 是否需要触发第二人复核：这里按你原始规则“与模型不一致才触发”
-            // 但你当前没提供 ModelPrediction 类，所以这里给你占位：
-            bool triggeredR2 = false;
+                // 3) 再更新 assignment（仍需带上 Status/ExpiresAt 条件防并发）
+                var updated = await db.CaseAssignments
+                    .Where(a => a.Id == req.AssignmentId
+                             && a.CaseId == req.CaseId
+                             && a.RaterId == raterId
+                             && a.Status == StatusAssigned
+                             && a.ExpiresAt != null
+                             && a.ExpiresAt > now)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.Status, StatusSubmitted)
+                        .SetProperty(a => a.CompletedAt, now)
+                        .SetProperty(a => a.AnnotationId, annotation.Id)
+                        .SetProperty(a => a.LastSeenAt, now), ct);
 
-            // 如果你暂时没有模型结果，也可以先用“所有R1都做R2抽检”策略（比如10%）来做质控
-            // triggeredR2 = assignment.Round == 1 && Random.Shared.NextDouble() < 0.1;
+                if (updated != 1)
+                    throw new InvalidOperationException("Assignment no longer active.");
 
-            await db.SaveChangesAsync(ct);
-
-            return new SubmitAnnotationResponse(true, "Saved.", triggeredR2);
+                await tx.CommitAsync(ct);
+                return new SubmitAnnotationResponse(true, "Saved.", false);
+            }
+            catch
+            {
+                await tx.RollbackAsync(ct);
+                throw;
+            }
         }
 
         public async Task<bool> ExtendLeaseAsync(string loginName, Guid assignmentId, CancellationToken ct = default)
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var rater = await db.Raters.SingleAsync(x => x.LoginName == loginName, ct);
+
+            var raterId = await db.Raters
+                .Where(x => x.LoginName == loginName)
+                .Select(x => (Guid?)x.Id)
+                .SingleOrDefaultAsync(ct);
+
+            if (raterId is null) return false;
 
             var now = DateTime.UtcNow;
+
             var updated = await db.CaseAssignments
                 .Where(a => a.Id == assignmentId
-                         && a.RaterId == rater.Id
+                         && a.RaterId == raterId
                          && a.Status == StatusAssigned
+                         && a.ExpiresAt != null
                          && a.ExpiresAt > now)
                 .ExecuteUpdateAsync(s => s
                     .SetProperty(a => a.LastSeenAt, now)
@@ -184,33 +305,61 @@ namespace MedExtractEval.Services
             return value.Trim();
         }
 
-        private static async Task<CaseAssignment?> CreateAssignmentAsync(
-            MedEvalDbContext db, Guid caseId, Guid raterId, int round, DateTime now, CancellationToken ct)
+        private async Task<AssignNextCaseResponse?> TryClaimReadyAssignmentAsync(MedEvalDbContext db,
+                                                                                 Guid raterId,
+                                                                                 int round,
+                                                                                 DateTime now,
+                                                                                 Func<IQueryable<CaseAssignment>, IQueryable<CaseAssignment>> extraFilter,
+                                                                                 CancellationToken ct)
         {
-            var assignment = new CaseAssignment
-            {
-                Id = Guid.NewGuid(),
-                CaseId = caseId,
-                RaterId = raterId,
-                Round = round,
-                AssignedAt = now,
-                ExpiresAt = now.AddMinutes(20),
-                Status = StatusAssigned,
-                LastSeenAt = now
-            };
+            // 候选：Ready + round + Case 未最终裁决 + 还没被别人 Assigned
+            IQueryable<CaseAssignment> baseQuery = db.CaseAssignments
+                .Where(a => a.Status == StatusReady && a.Round == round && a.RaterId == null)
+                .Where(a => db.Cases.Any(c => c.Id == a.CaseId && c.FinalGoldLabel == null));
 
-            db.CaseAssignments.Add(assignment);
+            baseQuery = extraFilter(baseQuery);
 
-            try
-            {
-                await db.SaveChangesAsync(ct);
-                return assignment;
-            }
-            catch (DbUpdateException)
-            {
-                // 可能被别人抢先分配了（唯一索引冲突）
-                return null;
-            }
+            // 选一个候选 ID（建议“稳定排序”而不是随机）
+            var candidateId = await baseQuery
+                .OrderBy(a => a.Attempt)          // 先发放尝试少的
+                .ThenBy(a => a.Id)                // 稳定
+                .Select(a => a.Id)
+                .FirstOrDefaultAsync(ct);
+
+            if (candidateId == Guid.Empty) return null;
+
+            // 原子 claim：只有当仍是 Ready 且 RaterId 为空时才成功
+            var updated = await db.CaseAssignments
+                .Where(a => a.Id == candidateId && a.Status == StatusReady && a.RaterId == null)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(a => a.Status, StatusAssigned)
+                    .SetProperty(a => a.RaterId, raterId)
+                    .SetProperty(a => a.AssignedAt, now)
+                    .SetProperty(a => a.LastSeenAt, now)
+                    .SetProperty(a => a.ExpiresAt, now.AddMinutes(20))
+                , ct);
+
+            if (updated != 1)
+                return null; // 被抢走了，上层可以再调用一次 TryClaim... 或直接回到主流程继续
+
+            // 回读 payload
+            var a2 = await db.CaseAssignments
+                .Where(a => a.Id == candidateId)
+                .Select(a => new { a.Id, a.CaseId, a.Round })
+                .SingleAsync(ct);
+
+            var c = await db.Cases
+                .Where(x => x.Id == a2.CaseId)
+                .Select(x => new { x.Id, x.TaskType, x.RawText, x.MetaInfo })
+                .SingleAsync(ct);
+
+            return new AssignNextCaseResponse(
+                AssignmentId: a2.Id,
+                CaseId: c.Id,
+                TaskType: c.TaskType,
+                RawText: c.RawText,
+                MetaInfo: c.MetaInfo,
+                Round: a2.Round);
         }
     }
 }

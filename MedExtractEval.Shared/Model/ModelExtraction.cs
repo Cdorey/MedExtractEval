@@ -28,7 +28,7 @@
         /// <summary>
         /// Gets or sets the associated case item.
         /// </summary>
-        public CaseItem? CaseItem { get; set; }
+        public CaseItem? Case { get; set; }
 
         /// <summary>
         /// Gets or sets the ID of the model configuration used for the prediction.
