@@ -52,7 +52,7 @@ namespace MedExtractEval
                 .AddDefaultTokenProviders();
 
             builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
-            builder.Services.AddScoped<IAnnotationAppService, AnnotationAppService>();
+            builder.Services.AddScoped<IAnnotationWorkflowService, AnnotationWorkflowService>();
 
             var app = builder.Build();
             if (app.Environment.IsDevelopment())

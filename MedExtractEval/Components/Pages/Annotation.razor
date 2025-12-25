@@ -1,6 +1,6 @@
 ﻿@page "/annotation"
 @using System.ComponentModel.DataAnnotations
-@inject IAnnotationAppService AnnotationService
+@inject IAnnotationWorkflowService AnnotationWorkflowService
 @using System.Security.Claims
 @using MedExtractEval.DTOs
 @using MedExtractEval.Services
@@ -301,9 +301,9 @@
 
                 var loginName = await GetLoginNameAsync();
 
-                bool ok = await AnnotationService.ExtendLeaseAsync(loginName, AssignmentId, token);
+                var ok = await AnnotationWorkflowService.HeartbeatAsync(loginName, AssignmentId, token);
 
-                if (!ok)
+                if (!ok.Ok)
                 {
                     _leaseOk = false;
 
@@ -353,7 +353,7 @@
         var loginName = await GetLoginNameAsync();
         CurrentRaterDisplay = loginName;
 
-        var res = await AnnotationService.AssignNextCaseAsync(loginName);
+        var res = await AnnotationWorkflowService.AcquireAsync(loginName);
 
         if (res is null)
         {
@@ -399,14 +399,14 @@
                 CaseId: Case.Id,
                 TaskType: Case.TaskType,
                 AnnotatedValue: annotatedValue,
-                Uncertainty: Form.Note, // 你也可以改成单独字段
+                Note: Form.Note, // 你也可以改成单独字段
                 StartedAtUtc: AssignedAt,
                 SubmittedAtUtc: DateTime.UtcNow,
                 DifficultyScore: Form.Difficulty,
                 ConfidenceScore: Form.Confidence
             );
 
-            var resp = await AnnotationService.SubmitAsync(loginName, req);
+            var resp = await AnnotationWorkflowService.SubmitAsync(loginName, req);
 
             StatusMessage = resp.Message;
 
