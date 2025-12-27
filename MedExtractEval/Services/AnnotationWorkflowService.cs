@@ -233,11 +233,11 @@ namespace MedExtractEval.Services
             if (!string.Equals(caseInfo.TaskType, req.TaskType, StringComparison.OrdinalIgnoreCase))
                 return new SubmitAnnotationResponse(false, "Task type mismatch.", false);
 
-            // 4) 写 Annotation
+            // 4) 写 Annotation（先准备实体）
             var normalized = NormalizeAnnotatedValue(req.AnnotatedValue);
             var annotationId = Guid.NewGuid();
 
-            db.Annotations.Add(new Annotation
+            var annotation = new Annotation
             {
                 Id = annotationId,
                 CaseId = caseInfo.Id,
@@ -251,29 +251,42 @@ namespace MedExtractEval.Services
                 CreatedAt = req.SubmittedAtUtc,
                 DifficultyScore = req.DifficultyScore,
                 ConfidenceScore = req.ConfidenceScore
+            };
+
+            var strategy = db.Database.CreateExecutionStrategy();
+
+            return await strategy.ExecuteAsync(async () =>
+            {
+                await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+                // A) 先落库 Annotation，确保 FK 指向存在
+                db.Annotations.Add(annotation);
+                await db.SaveChangesAsync(ct);
+
+                // B) 再“原子提交 assignment”（仍需满足 active 条件）
+                var submitUpdated = await db.CaseAssignments
+                    .Where(a => a.Id == req.AssignmentId
+                             && a.CaseId == req.CaseId
+                             && a.RaterId == raterId
+                             && a.Status == StatusAssigned
+                             && a.ExpiresAt != null
+                             && a.ExpiresAt > now)
+                    .ExecuteUpdateAsync(s => s
+                        .SetProperty(a => a.Status, StatusSubmitted)
+                        .SetProperty(a => a.CompletedAt, now)
+                        .SetProperty(a => a.AnnotationId, annotationId)
+                        .SetProperty(a => a.LastSeenAt, now), ct);
+
+                if (submitUpdated != 1)
+                {
+                    // assignment 已不再 active，回滚，Annotation 也不会残留
+                    await tx.RollbackAsync(ct);
+                    return new SubmitAnnotationResponse(false, "Assignment is no longer active. Please reload.", false);
+                }
+
+                await tx.CommitAsync(ct);
+                return new SubmitAnnotationResponse(true, "Saved.", false);
             });
-
-            // 5) 原子提交 assignment
-            var submitUpdated = await db.CaseAssignments
-                .Where(a => a.Id == req.AssignmentId
-                         && a.CaseId == req.CaseId
-                         && a.RaterId == raterId
-                         && a.Status == StatusAssigned
-                         && a.ExpiresAt != null
-                         && a.ExpiresAt > now)
-                .ExecuteUpdateAsync(s => s
-                    .SetProperty(a => a.Status, StatusSubmitted)
-                    .SetProperty(a => a.CompletedAt, now)
-                    .SetProperty(a => a.AnnotationId, annotationId)
-                    .SetProperty(a => a.LastSeenAt, now), ct);
-
-            if (submitUpdated != 1)
-                return new SubmitAnnotationResponse(false, "Assignment is no longer active. Please reload.", false);
-
-            await db.SaveChangesAsync(ct);
-
-            // triggeredR2 交给 ServiceA/工作流裁决逻辑处理更合适
-            return new SubmitAnnotationResponse(true, "Saved.", false);
         }
 
         public async Task<bool> SkipAsync(
