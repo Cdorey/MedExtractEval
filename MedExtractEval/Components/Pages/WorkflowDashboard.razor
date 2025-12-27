@@ -1,0 +1,526 @@
+﻿@page "/workflow"
+@attribute [Authorize]
+@implements IAsyncDisposable
+
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.EntityFrameworkCore
+@using MedExtractEval.Data
+@using MedExtractEval.Services
+@using MedExtractEval.DTOs
+@rendermode InteractiveServer
+@inject IDbContextFactory<MedEvalDbContext> DbFactory
+@inject IAnnotationWorkflowService Workflow
+
+<h3 class="mb-3">Annotation Workflow Dashboard</h3>
+
+@if (_loading)
+{
+    <div class="alert alert-secondary">Loading…</div>
+}
+else if (_stats is null)
+{
+    <div class="alert alert-warning">No data.</div>
+}
+else
+{
+    <div class="row g-3">
+        <!-- ===== Summary cards ===== -->
+        <div class="col-12 col-lg-3">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="text-muted small">Cases</div>
+                    <div class="fs-4 fw-semibold">@_stats.TotalCases</div>
+                    <div class="small text-muted">Finalized: @_stats.FinalizedCases</div>
+                    <div class="progress mt-2" style="height: 8px;">
+                        <div class="progress-bar" role="progressbar"
+                             style="width:@(_stats.TotalCases == 0 ? 0 : (100.0 * _stats.FinalizedCases / _stats.TotalCases))%">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-3">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="text-muted small">Assignments (all rounds)</div>
+                    <div class="fs-4 fw-semibold">@_stats.TotalAssignments</div>
+                    <div class="small text-muted">
+                        Ready @_stats.AssignmentsReady · Assigned @_stats.AssignmentsAssigned · Submitted @_stats.AssignmentsSubmitted · Skipped @_stats.AssignmentsSkipped
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-3">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="text-muted small">Annotations</div>
+                    <div class="fs-4 fw-semibold">@_stats.TotalAnnotations</div>
+                    <div class="small text-muted">
+                        R1 @_stats.AnnoR1 · R2 @_stats.AnnoR2 · R3 @_stats.AnnoR3
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-3">
+            <div class="card shadow-sm">
+                <div class="card-body">
+                    <div class="text-muted small">Model extractions (LLM)</div>
+                    <div class="fs-4 fw-semibold">@_stats.TotalModelExtractions</div>
+                    <div class="small text-muted">Cases covered: @_stats.CasesWithModelExtraction</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== Controls: Seed / Recycle / QC / Extraction ===== -->
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header d-flex align-items-center justify-content-between">
+                    <div class="fw-semibold">Controls</div>
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshAsync" disabled="@_busy">
+                            Refresh
+                        </button>
+                        <div class="form-check form-switch mt-1">
+                            <input class="form-check-input" type="checkbox" role="switch" id="autoRefresh"
+                                   @bind="_autoRefresh" />
+                            <label class="form-check-label small" for="autoRefresh">Auto refresh</label>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card-body">
+                    <div class="row g-3">
+                        <!-- Seed -->
+                        <div class="col-12 col-lg-4">
+                            <div class="border rounded p-3">
+                                <div class="fw-semibold mb-2">1) 创建任务池</div>
+
+                                <div class="mb-2">
+                                    <label class="form-label small">TaskTypes (comma separated)</label>
+                                    <input class="form-control form-control-sm" @bind="_seedTaskTypesText"
+                                           placeholder="ExamCoronaryCTA,ExamEjectionFraction,ExamCarotidIMTPlaque" />
+                                </div>
+
+                                <div class="row g-2 mb-2">
+                                    <div class="col-6">
+                                        <label class="form-label small">PerTaskTypeN</label>
+                                        <input class="form-control form-control-sm" type="number" @bind="_seedPerTaskTypeN" />
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small">Round</label>
+                                        <input class="form-control form-control-sm" type="number" @bind="_seedRound" />
+                                    </div>
+                                </div>
+
+                                <div class="form-check mb-2">
+                                    <input class="form-check-input" type="checkbox" id="excludeSeeded" @bind="_seedExcludeAlreadySeeded" />
+                                    <label class="form-check-label small" for="excludeSeeded">ExcludeAlreadySeeded</label>
+                                </div>
+
+                                <button class="btn btn-primary btn-sm" @onclick="SeedAsync" disabled="@_busy">
+                                    Seed
+                                </button>
+
+                                @if (!string.IsNullOrWhiteSpace(_seedMsg))
+                                {
+                                    <div class="alert alert-info mt-2 mb-0 py-2 small">@_seedMsg</div>
+                                }
+                            </div>
+                        </div>
+
+                        <!-- Recycle -->
+                        <div class="col-12 col-lg-4">
+                            <div class="border rounded p-3">
+                                <div class="fw-semibold mb-2">2) 回收过期的租约</div>
+                                <div class="text-muted small mb-2">
+                                    把过期 Assigned → Ready（清租约、Attempt++）
+                                </div>
+                                <button class="btn btn-outline-primary btn-sm" @onclick="RecycleAsync" disabled="@_busy">
+                                    Recycle now
+                                </button>
+
+                                @if (!string.IsNullOrWhiteSpace(_recycleMsg))
+                                {
+                                    <div class="alert alert-info mt-2 mb-0 py-2 small">@_recycleMsg</div>
+                                }
+                            </div>
+                        </div>
+
+                        <!-- QC -->
+                        <div class="col-12 col-lg-4">
+                            <div class="border rounded p-3">
+                                <div class="fw-semibold mb-2">3) QC / Finalize pipeline</div>
+
+                                <div class="mb-2">
+                                    <label class="form-label small">TaskTypes (optional, comma separated)</label>
+                                    <input class="form-control form-control-sm" @bind="_qcTaskTypesText"
+                                           placeholder="leave empty = all" />
+                                </div>
+
+                                <div class="row g-2 mb-2">
+                                    <div class="col-6">
+                                        <label class="form-label small">AuditRate (0~1)</label>
+                                        <input class="form-control form-control-sm" type="number" step="0.01" @bind="_qcAuditRate" />
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label small">MaxCases (0=all)</label>
+                                        <input class="form-control form-control-sm" type="number" @bind="_qcMaxCases" />
+                                    </div>
+                                </div>
+
+                                <div class="form-check mb-2">
+                                    <input class="form-check-input" type="checkbox" id="qcCreateAudit"
+                                           @bind="_qcCreateAuditR2ForMatches" />
+                                    <label class="form-check-label small" for="qcCreateAudit">CreateAuditR2ForMatches</label>
+                                </div>
+
+                                <button class="btn btn-warning btn-sm" @onclick="RunQcAsync" disabled="@_busy">
+                                    Run QC
+                                </button>
+
+                                @if (!string.IsNullOrWhiteSpace(_qcMsg))
+                                {
+                                    <div class="alert alert-info mt-2 mb-0 py-2 small">@_qcMsg</div>
+                                }
+                            </div>
+                        </div>
+
+                        <!-- Extraction (placeholder) -->
+                        <div class="col-12">
+                            <div class="border rounded p-3">
+                                <div class="fw-semibold mb-2">4) Start extraction (LLM) — placeholder</div>
+                                <div class="text-muted small mb-2">
+                                    你现在的 WorkflowService 已经有 QC 逻辑，但“真正跑 LLM 抽取、写 ModelExtractions”还不在这个服务里。
+                                    这里先放一个按钮占位：你后面接上“调用腾讯云 LKEAP + 写入 ModelExtractions”即可。
+                                </div>
+                                <button class="btn btn-outline-dark btn-sm" @onclick="StartExtractionAsync" disabled="@_busy">
+                                    Start extraction (TODO)
+                                </button>
+                                @if (!string.IsNullOrWhiteSpace(_extractMsg))
+                                {
+                                    <div class="alert alert-secondary mt-2 mb-0 py-2 small">@_extractMsg</div>
+                                }
+                            </div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div class="card-footer small text-muted d-flex justify-content-between">
+                    <span>Last refresh: @_lastRefreshLocal</span>
+                    <span>@(_busy ? "Working…" : "Idle")</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- ===== By TaskType table ===== -->
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header fw-semibold">Breakdown by TaskType</div>
+                <div class="card-body table-responsive">
+                    <table class="table table-sm align-middle">
+                        <thead>
+                            <tr class="text-muted">
+                                <th>TaskType</th>
+                                <th>Cases</th>
+                                <th>Finalized</th>
+                                <th>Assignments Ready</th>
+                                <th>Assigned</th>
+                                <th>Submitted</th>
+                                <th>Skipped</th>
+                                <th>Anno R1</th>
+                                <th>Anno R2</th>
+                                <th>LLM extractions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in _stats.ByTaskType.OrderBy(x => x.TaskType))
+                            {
+                                <tr>
+                                    <td class="fw-semibold">@row.TaskType</td>
+                                    <td>@row.Cases</td>
+                                    <td>@row.Finalized</td>
+                                    <td>@row.AssignReady</td>
+                                    <td>@row.AssignAssigned</td>
+                                    <td>@row.AssignSubmitted</td>
+                                    <td>@row.AssignSkipped</td>
+                                    <td>@row.AnnoR1</td>
+                                    <td>@row.AnnoR2</td>
+                                    <td>@row.ModelExtractions</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+    </div>
+}
+
+@code {
+    private bool _loading = true;
+    private bool _busy = false;
+    private bool _autoRefresh = true;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    private DashboardStats? _stats;
+    private string _lastRefreshLocal = "-";
+
+    // Seed UI state
+    private string _seedTaskTypesText = "ExamCoronaryCTA,ExamEjectionFraction,ExamCarotidIMTPlaque";
+    private int _seedPerTaskTypeN = 100;
+    private int _seedRound = 1;
+    private bool _seedExcludeAlreadySeeded = true;
+    private string? _seedMsg;
+
+    // QC UI state
+    private string _qcTaskTypesText = "";
+    private double _qcAuditRate = 0.10;
+    private int _qcMaxCases = 0;
+    private bool _qcCreateAuditR2ForMatches = true;
+    private string? _qcMsg;
+
+    // Extraction placeholder
+    private string? _extractMsg;
+    private string? _recycleMsg;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _cts = new CancellationTokenSource();
+        _timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+
+        _ = AutoRefreshLoopAsync(_cts.Token);
+
+        await RefreshAsync();
+        _loading = false;
+    }
+
+    private async Task AutoRefreshLoopAsync(CancellationToken token)
+    {
+        try
+        {
+            while (_timer is not null && await _timer.WaitForNextTickAsync(token))
+            {
+                if (_autoRefresh && !_busy)
+                {
+                    await InvokeAsync(RefreshAsync);
+                }
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _cts?.Cancel();
+        _timer?.Dispose();
+        _cts?.Dispose();
+        await Task.CompletedTask;
+    }
+
+    private async Task RefreshAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        // 总览
+        var totalCases = await db.Cases.CountAsync();
+        var finalizedCases = await db.Cases.CountAsync(c => c.FinalGoldLabel != null);
+
+        var totalAssignments = await db.CaseAssignments.CountAsync();
+        var assignReady = await db.CaseAssignments.CountAsync(a => a.Status == "Ready");
+        var assignAssigned = await db.CaseAssignments.CountAsync(a => a.Status == "Assigned");
+        var assignSubmitted = await db.CaseAssignments.CountAsync(a => a.Status == "Submitted");
+        var assignSkipped = await db.CaseAssignments.CountAsync(a => a.Status == "Skipped");
+
+        var totalAnnotations = await db.Annotations.CountAsync();
+        var annoR1 = await db.Annotations.CountAsync(a => a.Round == 1);
+        var annoR2 = await db.Annotations.CountAsync(a => a.Round == 2);
+        var annoR3 = await db.Annotations.CountAsync(a => a.Round == 3);
+
+        var totalModelExtractions = await db.ModelExtractions.CountAsync();
+        var casesWithModelExtraction = await db.ModelExtractions.Select(m => m.CaseId).Distinct().CountAsync();
+
+        // 按 TaskType 统计（尽量避免复杂 Join，拆成几段，足够清晰）
+        var taskTypes = await db.Cases.Select(c => c.TaskType).Distinct().ToListAsync();
+
+        var byTask = new List<TaskTypeStats>();
+        foreach (var t in taskTypes)
+        {
+            var caseIds = db.Cases.Where(c => c.TaskType == t).Select(c => c.Id);
+
+            var cases = await caseIds.CountAsync();
+            var fin = await db.Cases.CountAsync(c => c.TaskType == t && c.FinalGoldLabel != null);
+
+            var aReady = await db.CaseAssignments.CountAsync(a => caseIds.Contains(a.CaseId) && a.Status == "Ready");
+            var aAssigned = await db.CaseAssignments.CountAsync(a => caseIds.Contains(a.CaseId) && a.Status == "Assigned");
+            var aSubmitted = await db.CaseAssignments.CountAsync(a => caseIds.Contains(a.CaseId) && a.Status == "Submitted");
+            var aSkipped = await db.CaseAssignments.CountAsync(a => caseIds.Contains(a.CaseId) && a.Status == "Skipped");
+
+            var r1 = await db.Annotations.CountAsync(x => caseIds.Contains(x.CaseId) && x.Round == 1);
+            var r2 = await db.Annotations.CountAsync(x => caseIds.Contains(x.CaseId) && x.Round == 2);
+
+            var mex = await db.ModelExtractions.CountAsync(m => caseIds.Contains(m.CaseId));
+
+            byTask.Add(new TaskTypeStats(t, cases, fin, aReady, aAssigned, aSubmitted, aSkipped, r1, r2, mex));
+        }
+
+        _stats = new DashboardStats(
+            totalCases, finalizedCases,
+            totalAssignments, assignReady, assignAssigned, assignSubmitted, assignSkipped,
+            totalAnnotations, annoR1, annoR2, annoR3,
+            totalModelExtractions, casesWithModelExtraction,
+            byTask);
+
+        _lastRefreshLocal = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+        StateHasChanged();
+    }
+
+    private async Task SeedAsync()
+    {
+        _busy = true;
+        _seedMsg = null;
+
+        try
+        {
+            var taskTypes = SplitCsv(_seedTaskTypesText);
+            var req = new SeedAssignmentsRequest(
+                TaskTypes: taskTypes,
+                PerTaskTypeN: _seedPerTaskTypeN,
+                Round: _seedRound,
+                ExcludeAlreadySeeded: _seedExcludeAlreadySeeded
+            );
+
+            var res = await Workflow.SeedAsync(req);
+            _seedMsg = $"Requested {res.RequestedTotal}, Created {res.CreatedTotal}. " +
+                       string.Join(" | ", res.ByTaskType.Select(x => $"{x.TaskType}: {x.Created}/{x.Requested}"));
+
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _seedMsg = $"Seed failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RecycleAsync()
+    {
+        _busy = true;
+        _recycleMsg = null;
+
+        try
+        {
+            var updated = await Workflow.RecycleExpiredLeasesAsync(DateTime.UtcNow);
+            _recycleMsg = $"Recycled {updated} expired leases.";
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _recycleMsg = $"Recycle failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RunQcAsync()
+    {
+        _busy = true;
+        _qcMsg = null;
+
+        try
+        {
+            var taskTypes = SplitCsv(_qcTaskTypesText);
+            var req = new QcProgressRequest(
+                TaskTypes: taskTypes.Length == 0 ? null : taskTypes,
+                MaxCases: _qcMaxCases <= 0 ? null : _qcMaxCases,
+                AuditRate: _qcAuditRate,
+                CreateAuditR2ForMatches: _qcCreateAuditR2ForMatches
+            );
+
+            var res = await Workflow.RunQcAsync(req);
+            _qcMsg =
+                $"Scanned={res.ScannedCases}, AutoConfirmed={res.AutoConfirmed}, " +
+                $"SentToR2={res.SentToR2}, AuditedToR2={res.AuditedToR2}, " +
+                $"FinalizedByR1R2Agree={res.FinalizedByR1R2Agree}, NeedsAdj={res.MarkedNeedsAdjudication}, Missing={res.SkippedBecauseMissingData}";
+
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            _qcMsg = $"QC failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task StartExtractionAsync()
+    {
+        _busy = true;
+        _extractMsg = null;
+
+        try
+        {
+            // TODO: 这里接入你真正的 “跑 LLM 并写入 ModelExtractions” 的服务调用
+            // 例如：await ExtractionRunner.RunAsync(experimentId, taskTypes, modelConfigId...)
+            _extractMsg = "Not implemented yet: please wire your LLM extraction runner here.";
+        }
+        catch (Exception ex)
+        {
+            _extractMsg = $"Start extraction failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string[] SplitCsv(string text)
+        => (text ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToArray();
+
+    // --- view models for the page ---
+    private sealed record DashboardStats(
+        int TotalCases,
+        int FinalizedCases,
+        int TotalAssignments,
+        int AssignmentsReady,
+        int AssignmentsAssigned,
+        int AssignmentsSubmitted,
+        int AssignmentsSkipped,
+        int TotalAnnotations,
+        int AnnoR1,
+        int AnnoR2,
+        int AnnoR3,
+        int TotalModelExtractions,
+        int CasesWithModelExtraction,
+        List<TaskTypeStats> ByTaskType
+    );
+
+    private sealed record TaskTypeStats(
+        string TaskType,
+        int Cases,
+        int Finalized,
+        int AssignReady,
+        int AssignAssigned,
+        int AssignSubmitted,
+        int AssignSkipped,
+        int AnnoR1,
+        int AnnoR2,
+        int ModelExtractions
+    );
+}

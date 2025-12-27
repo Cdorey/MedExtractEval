@@ -428,6 +428,8 @@
         {
             // 如果你服务还没实现 Skip：先本地跳过，直接取下一条
             // 建议后面加一个 CaseAssignment.Status = Skipped
+            var loginName = await GetLoginNameAsync();
+            await AnnotationWorkflowService.SkipAsync(loginName, AssignmentId);
             StatusMessage = "Skipped. Loading next case…";
             await LoadNextCaseAsync();
         }
