@@ -51,8 +51,9 @@ namespace MedExtractEval
                 .AddSignInManager()
                 .AddDefaultTokenProviders();
 
-            builder.Services.AddSingleton<IEmailSender<ApplicationUser>, IdentityNoOpEmailSender>();
+            builder.Services.AddSingleton<IEmailSender<ApplicationUser>, SmtpEmailSender>();
             builder.Services.AddScoped<IAnnotationWorkflowService, AnnotationWorkflowService>();
+            builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection(nameof(EmailSettings)));
 
             var app = builder.Build();
             if (app.Environment.IsDevelopment())
