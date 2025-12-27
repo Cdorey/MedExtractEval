@@ -123,3 +123,13 @@
         overflow-y: auto;
     }
 }
+
+.nav-link.active {
+    border-radius: .5rem;
+    background: rgba(255,255,255,.10);
+}
+
+.nav-link:hover {
+    border-radius: .5rem;
+    background: rgba(255,255,255,.06);
+}

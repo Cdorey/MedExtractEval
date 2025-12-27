@@ -1,88 +1,88 @@
 ﻿@implements IDisposable
-
 @inject NavigationManager NavigationManager
 
-<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">MedExtractEval</a>
+<div class="top-row navbar navbar-dark px-3 border-bottom">
+    <div class="container-fluid px-0">
+        <a class="navbar-brand fw-semibold d-flex align-items-center gap-2" href="">
+            <span class="bi bi-clipboard2-pulse"></span>
+            MedExtractEval
+        </a>
+
+        <button class="navbar-toggler d-md-none" type="button" title="Toggle navigation"
+                @onclick="ToggleMenu">
+            <span class="navbar-toggler-icon"></span>
+        </button>
     </div>
 </div>
 
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+<div class="nav-scrollable @(isMenuOpen ? "show" : "")" @onclick="AutoCloseOnMobile">
+    <nav class="nav flex-column py-2">
 
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
-            </NavLink>
+        <div class="px-3 pt-2 pb-1 text-uppercase text-muted small" style="letter-spacing:.08em;">
+            Workspace
         </div>
 
-        @* <div class="nav-item px-3">
-            <NavLink class="nav-link" href="counter">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Counter
-            </NavLink>
-        </div> *@
-
-        @* <div class="nav-item px-3">
-            <NavLink class="nav-link" href="weather">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Weather
-            </NavLink>
-        </div> *@
-
-        @* <div class="nav-item px-3">
-            <NavLink class="nav-link" href="auth">
-                <span class="bi bi-lock-nav-menu" aria-hidden="true"></span> Auth Required
-            </NavLink>
-        </div> *@
-
-
+        <NavLink class="nav-link px-3" href="" Match="NavLinkMatch.All">
+            <span class="bi bi-house-door me-2" aria-hidden="true"></span>
+            Home
+        </NavLink>
 
         <AuthorizeView>
             <Authorized>
-                <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="annotation">
-                        <span class="bi bi-lock-nav-menu" aria-hidden="true"></span> Annotation
-                    </NavLink>
+                <NavLink class="nav-link px-3" href="annotation">
+                    <span class="bi bi-pencil-square me-2" aria-hidden="true"></span>
+                    Annotation
+                </NavLink>
+
+                <NavLink class="nav-link px-3" href="workflow">
+                    <span class="bi bi-kanban me-2" aria-hidden="true"></span>
+                    Workflow Manager
+                </NavLink>
+
+                <div class="px-3 pt-3 pb-1 text-uppercase text-muted small" style="letter-spacing:.08em;">
+                    Account
                 </div>
-                <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="workflow">
-                        <span class="bibi-plus-square-fill-nav-menu" aria-hidden="true"></span> WorkflowManager
-                    </NavLink>
-                </div>
-                <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="Account/Manage">
-                        <span class="bi bi-person-fill-nav-menu" aria-hidden="true"></span> @context.User.Identity?.Name
-                    </NavLink>
-                </div>
-                <div class="nav-item px-3">
-                    <form action="Account/Logout" method="post">
+
+                <NavLink class="nav-link px-3" href="Account/Manage">
+                    <span class="bi bi-person-circle me-2" aria-hidden="true"></span>
+                    @context.User.Identity?.Name
+                </NavLink>
+
+                <div class="px-3">
+                    <form action="Account/Logout" method="post" class="m-0">
                         <AntiforgeryToken />
                         <input type="hidden" name="ReturnUrl" value="@currentUrl" />
-                        <button type="submit" class="nav-link">
-                            <span class="bi bi-arrow-bar-left-nav-menu" aria-hidden="true"></span> Logout
+                        <button type="submit" class="btn btn-link nav-link px-0 text-start w-100">
+                            <span class="bi bi-box-arrow-right me-2" aria-hidden="true"></span>
+                            Logout
                         </button>
                     </form>
                 </div>
             </Authorized>
+
             <NotAuthorized>
-                <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="Account/Register">
-                        <span class="bi bi-person-nav-menu" aria-hidden="true"></span> Register
-                    </NavLink>
+                <div class="px-3 pt-2 pb-1 text-uppercase text-muted small" style="letter-spacing:.08em;">
+                    Account
                 </div>
-                <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="Account/Login">
-                        <span class="bi bi-person-badge-nav-menu" aria-hidden="true"></span> Login
-                    </NavLink>
-                </div>
+
+                <NavLink class="nav-link px-3" href="Account/Register">
+                    <span class="bi bi-person-plus me-2" aria-hidden="true"></span>
+                    Register
+                </NavLink>
+
+                <NavLink class="nav-link px-3" href="Account/Login">
+                    <span class="bi bi-box-arrow-in-right me-2" aria-hidden="true"></span>
+                    Login
+                </NavLink>
             </NotAuthorized>
         </AuthorizeView>
+
     </nav>
 </div>
 
 @code {
     private string? currentUrl;
+    private bool isMenuOpen; // for mobile
 
     protected override void OnInitialized()
     {
@@ -96,9 +96,18 @@
         StateHasChanged();
     }
 
+    private void ToggleMenu()
+        => isMenuOpen = !isMenuOpen;
+
+    private void AutoCloseOnMobile()
+    {
+        // 小屏才自动收起（Bootstrap md=768px）
+        // 这里不做 JS 判断宽度，简单策略：点击后就收起，桌面侧边栏通常不会触发点击背景
+        isMenuOpen = false;
+    }
+
     public void Dispose()
     {
         NavigationManager.LocationChanged -= OnLocationChanged;
     }
 }
-

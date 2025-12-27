@@ -56,7 +56,7 @@ namespace MedExtractEval
             builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection(nameof(EmailSettings)));
 
             var app = builder.Build();
-            if (app.Environment.IsDevelopment())
+            if (true)
             {
                 using var scope = app.Services.CreateScope();
 
