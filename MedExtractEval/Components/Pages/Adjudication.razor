@@ -1,0 +1,236 @@
+﻿@page "/adjudication"
+@using MedExtractEval.DTOs
+@using MedExtractEval.Services
+@inject IAnnotationWorkflowService Workflow
+@inject AuthenticationStateProvider AuthStateProvider
+@inject NavigationManager Nav
+@rendermode InteractiveServer
+
+<h3 class="mb-3">Final Adjudication (R3)</h3>
+
+@if (!isAuthed)
+{
+    <div class="alert alert-warning">
+        You are not authorized to adjudicate.
+    </div>
+}
+else
+{
+    <div class="row g-3">
+        <div class="col-12 col-lg-4">
+            <div class="card">
+                <div class="card-header d-flex gap-2 align-items-center">
+                    <strong>Pending queue</strong>
+                    <span class="ms-auto badge text-bg-secondary">@items.Count</span>
+                </div>
+
+                <div class="card-body">
+                    <div class="input-group mb-2">
+                        <input class="form-control" placeholder="TaskType filter (optional)" @bind="taskType" />
+                        <button class="btn btn-outline-secondary" @onclick="ReloadAsync" disabled="@busy">Reload</button>
+                    </div>
+
+                    <div class="list-group" style="max-height: 65vh; overflow:auto;">
+                        @foreach (var it in items)
+                        {
+                            var active = selected?.CaseId == it.CaseId;
+                            <button class="list-group-item list-group-item-action @(active ? "active" : "")"
+                                    @onclick="() => Select(it)">
+                                <div class="d-flex justify-content-between">
+                                    <div class="text-truncate" style="max-width: 75%;">
+                                        <strong>@it.TaskType</strong>
+                                        <div class="small text-truncate">@Short(it.RawText, 60)</div>
+                                    </div>
+                                    <div class="small text-nowrap">
+                                        @it.CaseId.ToString()[..8]
+                                    </div>
+                                </div>
+                            </button>
+                        }
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(message))
+                    {
+                        <div class="alert alert-info mt-2 mb-0">@message</div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-8">
+            <div class="card">
+                <div class="card-header">
+                    <strong>Case detail</strong>
+                    @if (selected is not null)
+                    {
+                        <span class="ms-2 text-muted small">CaseId: @selected.CaseId</span>
+                    }
+                </div>
+
+                <div class="card-body">
+                    @if (selected is null)
+                    {
+                        <div class="text-muted">Select a case from the left queue.</div>
+                    }
+                    else
+                    {
+                        <div class="mb-3">
+                            <div class="small text-muted mb-1">RawText</div>
+                            <pre class="p-2 bg-light border rounded" style="white-space: pre-wrap;">
+                                @((MarkupString)selected.RawText)</pre>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(selected.MetaInfo))
+                        {
+                            <div class="mb-3">
+                                <div class="small text-muted mb-1">MetaInfo</div>
+                                <pre class="p-2 bg-light border rounded" style="white-space: pre-wrap;">@selected.MetaInfo</pre>
+                            </div>
+                        }
+
+                        <div class="row g-2 mb-3">
+                            <div class="col-12 col-md-4">
+                                <div class="small text-muted mb-1">LLM</div>
+                                <div class="p-2 border rounded bg-white">@selected.LlmValue</div>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <div class="small text-muted mb-1">R1</div>
+                                <div class="p-2 border rounded bg-white">@selected.R1Value</div>
+                            </div>
+                            <div class="col-12 col-md-4">
+                                <div class="small text-muted mb-1">R2</div>
+                                <div class="p-2 border rounded bg-white">@selected.R2Value</div>
+                            </div>
+                        </div>
+
+                        <div class="mb-2">
+                            <label class="form-label">FinalGoldLabel</label>
+                            <input class="form-control" @bind="finalGoldLabel" />
+                            <div class="form-text">
+                                Tip: you can paste R1/R2/LLM value, or type a corrected value.
+                            </div>
+                        </div>
+
+                        <div class="d-flex gap-2">
+                            <button class="btn btn-primary" @onclick="SubmitAsync" disabled="@busy">Submit adjudication</button>
+                            <button class="btn btn-outline-secondary" @onclick="PrefillFromR1" disabled="@busy">Use R1</button>
+                            <button class="btn btn-outline-secondary" @onclick="PrefillFromR2" disabled="@busy">Use R2</button>
+                            <button class="btn btn-outline-secondary" @onclick="PrefillFromLlm" disabled="@busy">Use LLM</button>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(error))
+                        {
+                            <div class="alert alert-danger mt-3 mb-0">@error</div>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool busy;
+    private bool isAuthed;
+    private string? message;
+    private string? error;
+
+    private string? taskType;
+    private List<PendingAdjudicationItem> items = new();
+    private PendingAdjudicationItem? selected;
+    private string? finalGoldLabel;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = auth.User;
+
+        // 你也可以改成 Policy/Role，这里按 IsAdmin 判（需要你把 claim 映射好）
+        // 临时策略：只要登录即可进入页面（但提交时仍可在后端校验）
+        isAuthed = user.Identity?.IsAuthenticated == true;
+
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        busy = true;
+        error = null;
+        message = null;
+
+        try
+        {
+            var list = await Workflow.QueryPendingAdjudicationsAsync(
+                new QueryPendingAdjudicationsRequest(taskType, Take: 50, Skip: 0));
+
+            items = list.ToList();
+            selected = items.FirstOrDefault();
+            finalGoldLabel = selected is null ? null : selected.R2Value; // 默认填 R2（可按你偏好改）
+            message = items.Count == 0 ? "No pending adjudications." : null;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void Select(PendingAdjudicationItem it)
+    {
+        selected = it;
+        finalGoldLabel = it.R2Value;
+        error = null;
+        message = null;
+    }
+
+    private void PrefillFromR1() { if (selected != null) finalGoldLabel = selected.R1Value; }
+    private void PrefillFromR2() { if (selected != null) finalGoldLabel = selected.R2Value; }
+    private void PrefillFromLlm() { if (selected != null) finalGoldLabel = selected.LlmValue; }
+
+    private async Task SubmitAsync()
+    {
+        if (selected is null) return;
+
+        busy = true;
+        error = null;
+        message = null;
+
+        try
+        {
+            var auth = await AuthStateProvider.GetAuthenticationStateAsync();
+            var login = auth.User.Identity?.Name ?? "";
+
+            var resp = await Workflow.AdjudicateAsync(login, new AdjudicationRequest(
+                CaseId: selected.CaseId,
+                TaskType: selected.TaskType,
+                FinalGoldLabel: finalGoldLabel ?? ""
+            ));
+
+            if (!resp.Ok)
+            {
+                error = resp.Message;
+                return;
+            }
+
+            // 从队列移除并选中下一条
+            items.RemoveAll(x => x.CaseId == selected.CaseId);
+            selected = items.FirstOrDefault();
+            finalGoldLabel = selected?.R2Value;
+            message = "Adjudication saved.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private static string Short(string s, int n)
+        => string.IsNullOrEmpty(s) ? "" : (s.Length <= n ? s : s[..n] + "…");
+}

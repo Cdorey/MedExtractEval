@@ -49,6 +49,10 @@ namespace MedExtractEval.Services
             string adjudicatorLoginName,
             AdjudicationRequest req,
             CancellationToken ct = default);
+
+        Task<IReadOnlyList<PendingAdjudicationItem>> QueryPendingAdjudicationsAsync(
+            QueryPendingAdjudicationsRequest req,
+            CancellationToken ct = default);
     }
 
     public sealed class AnnotationWorkflowService(IDbContextFactory<MedEvalDbContext> dbFactory) : IAnnotationWorkflowService
@@ -643,10 +647,9 @@ namespace MedExtractEval.Services
         /// <param name="req"></param>
         /// <param name="ct"></param>
         /// <returns></returns>
-        public async Task<AdjudicationResult> AdjudicateAsync(
-            string adjudicatorLoginName,
-            AdjudicationRequest req,
-            CancellationToken ct = default)
+        public async Task<AdjudicationResult> AdjudicateAsync(string adjudicatorLoginName,
+                                                              AdjudicationRequest req,
+                                                              CancellationToken ct = default)
         {
             await using var db = await dbFactory.CreateDbContextAsync(ct);
             var now = DateTime.UtcNow;
@@ -684,6 +687,90 @@ namespace MedExtractEval.Services
 
             return new AdjudicationResult(true, "Adjudication saved.");
         }
+
+        public async Task<IReadOnlyList<PendingAdjudicationItem>> QueryPendingAdjudicationsAsync(QueryPendingAdjudicationsRequest req,
+                                                                                                 CancellationToken ct = default)
+        {
+            await using var db = await dbFactory.CreateDbContextAsync(ct);
+
+            var take = Math.Clamp(req.Take, 1, 200);
+            var skip = Math.Max(0, req.Skip);
+
+            var casesQuery = db.Cases.Where(c => c.FinalGoldLabel == null && db.CaseAssignments.Any(ca => ca.CaseId == c.Id));
+
+            if (!string.IsNullOrWhiteSpace(req.TaskType))
+                casesQuery = casesQuery.Where(c => c.TaskType == req.TaskType);
+
+            // 先取一批候选 case（避免一次性全表扫描）
+            // 这里取更多一点，后面要过滤掉 R1==R2 的
+            var candidateCases = await casesQuery
+                .OrderBy(c => c.Id)
+                .Select(c => new { c.Id, c.TaskType, c.RawText, c.MetaInfo })
+                .ToListAsync(ct);
+
+            if (candidateCases.Count == 0) return Array.Empty<PendingAdjudicationItem>();
+
+            var caseIds = candidateCases.Select(x => x.Id).ToList();
+
+            // 取 R1 / R2
+            var annos = await db.Annotations
+                .Where(a => caseIds.Contains(a.CaseId) && (a.Round == 1 || a.Round == 2))
+                .Select(a => new { a.CaseId, a.Round, a.AnnotatedValue, a.SubmittedAt })
+                .ToListAsync(ct);
+
+            // 取 LLM（最新一条）
+            var llms = await db.ModelExtractions
+                .Where(m => caseIds.Contains(m.CaseId))
+                .GroupBy(m => m.CaseId)
+                .Select(g => new
+                {
+                    CaseId = g.Key,
+                    ParsedValue = g.OrderByDescending(x => x.CreatedAt).Select(x => x.ParsedValue).FirstOrDefault()
+                })
+                .ToListAsync(ct);
+
+            var llmMap = llms.ToDictionary(x => x.CaseId, x => x.ParsedValue);
+
+            // 组装并筛选 R1!=R2
+            var grouped = annos
+                .GroupBy(a => a.CaseId)
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            var result = new List<PendingAdjudicationItem>(take);
+
+            foreach (var c in candidateCases)
+            {
+                if (!grouped.TryGetValue(c.Id, out var rows)) continue;
+
+                var r1 = rows.Where(x => x.Round == 1).OrderByDescending(x => x.SubmittedAt).FirstOrDefault();
+                var r2 = rows.Where(x => x.Round == 2).OrderByDescending(x => x.SubmittedAt).FirstOrDefault();
+
+                if (r1 is null || r2 is null) continue;
+
+                var r1n = NormalizeForCompare(r1.AnnotatedValue);
+                var r2n = NormalizeForCompare(r2.AnnotatedValue);
+
+                if (string.Equals(r1n, r2n, StringComparison.Ordinal))
+                    continue;
+
+                result.Add(new PendingAdjudicationItem(
+                    CaseId: c.Id,
+                    TaskType: c.TaskType,
+                    RawText: c.RawText,
+                    MetaInfo: c.MetaInfo,
+                    LlmValue: llmMap.TryGetValue(c.Id, out var lv) ? lv : null,
+                    R1Value: r1.AnnotatedValue,
+                    R2Value: r2.AnnotatedValue,
+                    R1SubmittedAtUtc: r1.SubmittedAt,
+                    R2SubmittedAtUtc: r2.SubmittedAt
+                ));
+
+                if (result.Count >= take) break;
+            }
+
+            return result;
+        }
+
 
         private static string NormalizeForCompare(string? value)
         {
