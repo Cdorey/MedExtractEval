@@ -1,0 +1,101 @@
+﻿@page "/analytics"
+@inject MedExtractEval.Services.IDataAnalysisService AnalysisService
+@rendermode InteractiveServer
+
+<h3>Analytics</h3>
+
+<div class="d-flex gap-2 align-items-center mb-3">
+    <button class="btn btn-primary" @onclick="RunAsync" disabled="@busy">
+        @(busy ? "Analyzing..." : "Run analysis")
+    </button>
+
+    <button class="btn btn-outline-secondary" @onclick="Cancel" disabled="@(!busy)">
+        Cancel
+    </button>
+
+    @if (!string.IsNullOrWhiteSpace(status))
+    {
+        <span class="text-muted">@status</span>
+    }
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-md-4">
+        <label class="form-label">TaskType (optional)</label>
+        <input class="form-control" @bind="taskType" placeholder="e.g. BMI, HF, ..." />
+    </div>
+    @* <div class="col-md-4">
+        <label class="form-label">DaysBack</label>
+        <input class="form-control" type="number" @bind="daysBack" min="1" max="365" />
+    </div> *@
+</div>
+
+@if (!string.IsNullOrWhiteSpace(error))
+{
+    <div class="alert alert-danger">@error</div>
+}
+
+@if (!string.IsNullOrWhiteSpace(reportText))
+{
+    <pre class="p-3 border rounded bg-light" style="white-space: pre-wrap;">@reportText</pre>
+}
+
+@code {
+    private bool busy;
+    private string? error;
+    private string? status;
+    private string? reportText;
+
+    private string? taskType;
+    private int daysBack = 30;
+
+    private CancellationTokenSource? cts;
+
+    private async Task RunAsync()
+    {
+        busy = true;
+        error = null;
+        status = null;
+        reportText = null;
+
+        cts?.Cancel();
+        cts?.Dispose();
+        cts = new CancellationTokenSource();
+
+        var progress = new Progress<string>(msg =>
+        {
+            status = msg;
+            InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            var req = new MedExtractEval.DTOs.DataAnalysisRequest(
+                TaskType: string.IsNullOrWhiteSpace(taskType) ? null : taskType.Trim(),
+                DaysBack: daysBack,
+                TakeTopErrors: 10
+            );
+
+            var report = await AnalysisService.GenerateReportAsync(req, progress, cts.Token);
+            reportText = report.ReportText;
+        }
+        catch (OperationCanceledException)
+        {
+            status = "Canceled.";
+        }
+        catch (Exception ex)
+        {
+            error = ex.ToString();
+        }
+        finally
+        {
+            busy = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void Cancel()
+    {
+        cts?.Cancel();
+    }
+}

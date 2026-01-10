@@ -54,7 +54,8 @@ namespace MedExtractEval
             builder.Services.AddSingleton<IEmailSender<ApplicationUser>, SmtpEmailSender>();
             builder.Services.AddScoped<IAnnotationWorkflowService, AnnotationWorkflowService>();
             builder.Services.Configure<EmailSettings>(builder.Configuration.GetSection(nameof(EmailSettings)));
-
+            builder.Services.AddScoped<IDataAnalysisService, DataAnalysisService>();
+            
             var app = builder.Build();
             if (true)
             {
