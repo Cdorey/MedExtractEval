@@ -39,7 +39,7 @@ namespace MedExtractEval.Data
                 .HasForeignKey(a => a.RaterId)
                 .OnDelete(DeleteBehavior.Restrict);
 
-            // ÐèÒªÄãÔÚ Annotation ÉÏÓÐ Round ×Ö¶Î
+            // ï¿½ï¿½Òªï¿½ï¿½ï¿½ï¿½ Annotation ï¿½ï¿½ï¿½ï¿½ Round ï¿½Ö¶ï¿½
             b.Entity<Annotation>()
                 .HasIndex(a => new { a.CaseId, a.RaterId, a.Round })
                 .IsUnique();

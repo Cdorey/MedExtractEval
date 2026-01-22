@@ -40,7 +40,7 @@ namespace MedExtractEval
             builder.Services.AddDbContext<ApplicationDbContext>(options =>
                 options.UseSqlServer(identityConn));
 
-            // ÒµÎñ¿â£¨½¨Òé factory£©
+            // Òµï¿½ï¿½â£¨ï¿½ï¿½ï¿½ï¿½ factoryï¿½ï¿½
             builder.Services.AddPooledDbContextFactory<MedEvalDbContext>(options =>
                 options.UseSqlServer(medEvalConn));
 

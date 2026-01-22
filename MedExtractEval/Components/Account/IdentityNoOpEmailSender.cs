@@ -31,7 +31,7 @@ namespace MedExtractEval.Components.Account
 
         private async Task SendEmailAsync(string username, string email, string subject, string body)
         {
-            // ¹¹ÔìÓÊ¼þÏûÏ¢
+            // ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½ï¿½ï¿½Ï¢
             var message = new MimeMessage();
             message.From.Add(new MailboxAddress(smtpSettings.SenderName, smtpSettings.SenderEmail));
             message.To.Add(new MailboxAddress(username, email));
@@ -43,7 +43,7 @@ namespace MedExtractEval.Components.Account
             };
             message.Body = builder.ToMessageBody();
 
-            // Ê¹ÓÃ MailKit µÄ SmtpClient ·¢ËÍÓÊ¼þ
+            // Ê¹ï¿½ï¿½ MailKit ï¿½ï¿½ SmtpClient ï¿½ï¿½ï¿½ï¿½ï¿½Ê¼ï¿½
             using var client = new SmtpClient();
             await client.ConnectAsync(smtpSettings.SmtpServer, smtpSettings.SmtpPort, SecureSocketOptions.SslOnConnect);
             await client.AuthenticateAsync(smtpSettings.UserName, smtpSettings.Password);
