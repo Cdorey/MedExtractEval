@@ -6,7 +6,7 @@ using System.Text;
 
 namespace MedExtract.OllamaExtractor
 {
-    internal class OllamaTask(OllamaApiClient ollama, string model, string sysMsg, string usrMsg)
+    public class OllamaTask(OllamaApiClient ollama, string model, string sysMsg, string usrMsg)
     {
         private readonly OllamaApiClient _ollama = ollama ?? throw new ArgumentNullException(nameof(ollama));
         private readonly string _model = model ?? throw new ArgumentNullException(nameof(model));

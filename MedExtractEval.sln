@@ -9,6 +9,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MedExtractEval.Shared", "Me
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MedExtract.OllamaExtractor", "MedExtract.OllamaExtractor\MedExtract.OllamaExtractor.csproj", "{81B59EFA-F613-420D-8F36-722D9D04A223}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MedExtract.Base", "MedExtract.Base\MedExtract.Base.csproj", "{957BAE7D-4C1B-4F80-A8D7-0521CAA73B28}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -27,6 +29,10 @@ Global
 		{81B59EFA-F613-420D-8F36-722D9D04A223}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{81B59EFA-F613-420D-8F36-722D9D04A223}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{81B59EFA-F613-420D-8F36-722D9D04A223}.Release|Any CPU.Build.0 = Release|Any CPU
+		{957BAE7D-4C1B-4F80-A8D7-0521CAA73B28}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{957BAE7D-4C1B-4F80-A8D7-0521CAA73B28}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{957BAE7D-4C1B-4F80-A8D7-0521CAA73B28}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{957BAE7D-4C1B-4F80-A8D7-0521CAA73B28}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
