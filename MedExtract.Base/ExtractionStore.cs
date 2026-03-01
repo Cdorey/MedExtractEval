@@ -87,7 +87,7 @@ namespace MedExtract.Base
             await db.SaveChangesAsync(ct);
         }
 
-        public async Task<ModelConfig> CreateOrGetModelConfigAsync(string modelName, string provider, string versionTag, string promptTemplate, double temperature, double topP, bool isDeterministic, CancellationToken ct = default)
+        public async Task<ModelConfig> CreateOrGetModelConfigAsync(string modelName, string provider, string versionTag, string promptTemplate, double temperature, double topP, bool isDeterministic, bool isThinking, CancellationToken ct = default)
         {
             await using var db = CreateDb();
 
@@ -101,7 +101,8 @@ namespace MedExtract.Base
                     x.PromptTemplate == promptTemplate &&
                     x.Temperature == temperature &&
                     x.TopP == topP &&
-                    x.IsDeterministic == isDeterministic, ct);
+                    x.IsDeterministic == isDeterministic &&
+                    x.IsThinking == isThinking, ct);
 
             if (existing is not null)
                 return existing;
@@ -116,7 +117,8 @@ namespace MedExtract.Base
                 PromptTemplate = promptTemplate,
                 Temperature = temperature,
                 TopP = topP,
-                IsDeterministic = isDeterministic
+                IsDeterministic = isDeterministic,
+                IsThinking = isThinking
             };
 
             await db.ModelConfigs.AddAsync(config, ct);
@@ -139,12 +141,13 @@ namespace MedExtract.Base
                         x.PromptTemplate == promptTemplate &&
                         x.Temperature == temperature &&
                         x.TopP == topP &&
-                        x.IsDeterministic == isDeterministic, ct);
+                        x.IsDeterministic == isDeterministic &&
+                        x.IsThinking == isThinking, ct);
 
                 return winner;
             }
         }
-        
+
         // （可选）批量写入：显著减少 SaveChanges 次数
         public async Task AddModelExtractionsAsync(IReadOnlyCollection<ModelExtraction> extractions, CancellationToken ct = default)
         {
@@ -179,7 +182,10 @@ namespace MedExtract.Base
             void configure(DbContextOptionsBuilder<MedEvalDbContext> ob, string cs) => ob.UseSqlServer(cs);
             MedEvalDbContext activator(DbContextOptions<MedEvalDbContext> options) => new(options);
 
-            return new DbContextFactory(resolver, configure, activator);
+            var x = new DbContextFactory(resolver, configure, activator);
+            using var db = x.Create(); // 预先创建一次，验证连接字符串和数据库访问是否正常
+            db.Database.Migrate(); // 确保数据库已创建并应用迁移
+            return x;
         }
     }
 }

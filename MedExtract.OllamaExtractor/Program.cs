@@ -19,9 +19,10 @@ var sysPromtDict = new Dictionary<string, string>
 
 var defaultModelName = "ministral-3:14b";
 var defaultVersionTage = "4760c35aeb9d";
-var defaultTemperature = 0.15;
+var defaultTemperature = 0.15f;
 var defaultTopP = 0.90;
 var defaultProvider = "Ollama";
+var thinkEnable = false;
 
 var store = new ExtractionStore(ConnectionStringResolvers.ConsolePrompt());
 
@@ -39,13 +40,14 @@ foreach (var exp in experiments)
             topP: defaultTopP,
             provider: defaultProvider,
             promptTemplate: sysPrompt,
-            isDeterministic: false);
+            isDeterministic: false,
+            isThinking: thinkEnable);
 
         var cases = await store.ListPendingCaseItemsAsync(exp, modelConfig);
 
         foreach (var caseItem in cases)
         {
-            var ollamaTask = new OllamaTask(ollama, modelConfig.ModelName, modelConfig.PromptTemplate, caseItem.RawText);
+            var ollamaTask = new OllamaTask(ollama, modelConfig.ModelName, modelConfig.PromptTemplate, caseItem.RawText, defaultTemperature, modelConfig.IsThinking);
             var x = await ollamaTask.RunAsync();
             var extraction = new OllamaExtraction(exp, caseItem, modelConfig);
             extraction.FromChatRunResult(x);

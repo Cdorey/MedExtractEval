@@ -6,7 +6,7 @@ using System.Text;
 
 namespace MedExtract.OllamaExtractor
 {
-    public class OllamaTask(OllamaApiClient ollama, string model, string sysMsg, string usrMsg)
+    public class OllamaTask(OllamaApiClient ollama, string model, string sysMsg, string usrMsg, float? temperature = null, bool thinkEnable = true, int? numPredict = null)
     {
         private readonly OllamaApiClient _ollama = ollama ?? throw new ArgumentNullException(nameof(ollama));
         private readonly string _model = model ?? throw new ArgumentNullException(nameof(model));
@@ -26,12 +26,14 @@ namespace MedExtract.OllamaExtractor
         /// <summary>
         /// 可选：是否启用 think
         /// </summary>
-        public bool ThinkEnabled { get; init; } = false;
+        public bool ThinkEnabled { get; init; } = thinkEnable;
 
         /// <summary>
         /// 可选：限制输出 token
         /// </summary>
-        public int? NumPredict { get; init; } = null;
+        public int? NumPredict { get; init; } = numPredict;
+
+        public float? Temperature { get; init; } = temperature;
 
         // 可选：流式增量回调（如果你想实时显示输出，而不是等结果返回）
         public event Action<string>? OnThinkingDelta;
@@ -164,6 +166,12 @@ namespace MedExtract.OllamaExtractor
             {
                 req.Options ??= new RequestOptions();
                 req.Options.NumPredict = NumPredict.Value;
+            }
+
+            if (Temperature.HasValue)
+            {
+                req.Options ??= new RequestOptions();
+                req.Options.Temperature = Temperature.Value;
             }
 
             return req;
