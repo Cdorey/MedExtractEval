@@ -26,7 +26,7 @@ namespace MedExtract.OllamaExtractor
         /// <summary>
         /// 可选：是否启用 think
         /// </summary>
-        public bool ThinkEnabled { get; init; } = true;
+        public bool ThinkEnabled { get; init; } = false;
 
         /// <summary>
         /// 可选：限制输出 token

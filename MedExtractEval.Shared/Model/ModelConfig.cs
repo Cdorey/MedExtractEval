@@ -44,5 +44,7 @@
         /// Gets or sets a value indicating whether the model is deterministic.
         /// </summary>
         public bool IsDeterministic { get; set; }
+
+        public bool IsThinking { get; set; }
     }
 }

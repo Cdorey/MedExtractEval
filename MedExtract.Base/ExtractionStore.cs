@@ -4,42 +4,61 @@ using Microsoft.EntityFrameworkCore;
 
 namespace MedExtract.Base
 {
-    public sealed class ExtractionStore : IAsyncDisposable
+    public sealed class ExtractionStore
     {
         private static ConnectionStringResolver? _resolver;
+
         private static readonly Lazy<DbContextFactory> _factory = new(CreateFactory, LazyThreadSafetyMode.ExecutionAndPublication);
 
-        private readonly MedEvalDbContext _db;
-        private bool _disposed;
+        public ExtractionStore(ConnectionStringResolver connectionStringResolver) => InitializeResolver(connectionStringResolver);
 
-        public ExtractionStore(ConnectionStringResolver connectionStringResolver)
+
+        public async Task<List<Experiment>> ListExperimentsAsync(CancellationToken ct = default)
         {
-            InitializeResolver(connectionStringResolver);
-
-            _db = _factory.Value.Create();
-
-            // 可选：你大量使用 AsNoTracking 的话，可以全局设置一次
-            _db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+            await using var db = CreateDb();
+            return await db.Experiments.AsNoTracking().ToListAsync(ct);
         }
 
-        public IQueryable<Experiment> Experiments
+        public async Task<List<CaseItem>> ListCasesAsync(CancellationToken ct = default)
         {
-            get { ThrowIfDisposed(); return _db.Experiments; }
+            await using var db = CreateDb();
+            return await db.Cases.AsNoTracking().ToListAsync(ct);
         }
 
-        public IQueryable<CaseItem> Cases
+        public async Task<List<ModelConfig>> ListModelConfigsAsync(CancellationToken ct = default)
         {
-            get { ThrowIfDisposed(); return _db.Cases; }
+            await using var db = CreateDb();
+            return await db.ModelConfigs.AsNoTracking().ToListAsync(ct);
         }
 
-        public IQueryable<ModelConfig> ModelConfigs
+        public async Task<List<CaseItem>> ListPendingCaseItemsAsync(Experiment experiment, ModelConfig modelConfig, CancellationToken ct = default)
         {
-            get { ThrowIfDisposed(); return _db.ModelConfigs; }
+            ArgumentNullException.ThrowIfNull(experiment);
+            ArgumentNullException.ThrowIfNull(modelConfig);
+
+            var caseIds = experiment.IncludedCaseIds;
+            if (caseIds is null || caseIds.Length == 0)
+                return [];
+
+            await using var db = CreateDb();
+
+            // 找出 experiment 内的 caseIds 中，尚不存在对应 (experimentId, modelConfigId, caseId) 的 ModelExtraction
+            var pending = await db.Cases
+                .AsNoTracking()
+                .Where(c => caseIds.Contains(c.Id))
+                .Where(c => !db.ModelExtractions.Any(mx =>
+                    mx.ExperimentId == experiment.Id &&
+                    mx.ModelConfigId == modelConfig.Id &&
+                    mx.CaseId == c.Id))
+                .OrderBy(c => c.Id)
+                .ToListAsync(ct);
+
+            return pending;
         }
 
         public async Task<Experiment> CreateAndAddExperimentAsync(string name, Guid[] cases, string description, CancellationToken ct = default)
         {
-            ThrowIfDisposed();
+            await using var db = CreateDb();
 
             var experiment = new Experiment
             {
@@ -49,24 +68,45 @@ namespace MedExtract.Base
                 Description = description
             };
 
-            await _db.Experiments.AddAsync(experiment, ct);
-            await _db.SaveChangesAsync(ct);
+            await db.Experiments.AddAsync(experiment, ct);
+            await db.SaveChangesAsync(ct);
             return experiment;
         }
 
         public async Task AddModelExtractionAsync(ModelExtraction extraction, CancellationToken ct = default)
         {
-            ThrowIfDisposed();
             ArgumentNullException.ThrowIfNull(extraction);
+            // 关键：不要让导航对象跟着进来触发连带插入
+            extraction.Experiment = null;
+            extraction.Case = null;
+            extraction.ModelConfig = null;
 
-            await _db.ModelExtractions.AddAsync(extraction, ct);
-            await _db.SaveChangesAsync(ct);
+            await using var db = CreateDb();
+
+            await db.ModelExtractions.AddAsync(extraction, ct);
+            await db.SaveChangesAsync(ct);
         }
 
-        public async Task<ModelConfig> CreateAndAddModelConfigAsync(string modelName, string provider, string versionTag, string promptTemplate, double temperature, double topP, bool isDeterministic, CancellationToken ct = default)
+        public async Task<ModelConfig> CreateOrGetModelConfigAsync(string modelName, string provider, string versionTag, string promptTemplate, double temperature, double topP, bool isDeterministic, CancellationToken ct = default)
         {
-            ThrowIfDisposed();
+            await using var db = CreateDb();
 
+            // 1) 先查（NoTracking，避免跟踪开销）
+            var existing = await db.ModelConfigs
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x =>
+                    x.ModelName == modelName &&
+                    x.Provider == provider &&
+                    x.VersionTag == versionTag &&
+                    x.PromptTemplate == promptTemplate &&
+                    x.Temperature == temperature &&
+                    x.TopP == topP &&
+                    x.IsDeterministic == isDeterministic, ct);
+
+            if (existing is not null)
+                return existing;
+
+            // 2) 再建
             var config = new ModelConfig
             {
                 Id = Guid.NewGuid(),
@@ -79,54 +119,67 @@ namespace MedExtract.Base
                 IsDeterministic = isDeterministic
             };
 
-            await _db.ModelConfigs.AddAsync(config, ct);
-            await _db.SaveChangesAsync(ct);
-            return config;
+            await db.ModelConfigs.AddAsync(config, ct);
+
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                return config;
+            }
+            catch (DbUpdateException)
+            {
+                // 3) 并发兜底：如果别的线程刚好插入了同样的记录，这里会因唯一约束失败
+                //    此时再查一次返回“赢家”
+                var winner = await db.ModelConfigs
+                    .AsNoTracking()
+                    .FirstAsync(x =>
+                        x.ModelName == modelName &&
+                        x.Provider == provider &&
+                        x.VersionTag == versionTag &&
+                        x.PromptTemplate == promptTemplate &&
+                        x.Temperature == temperature &&
+                        x.TopP == topP &&
+                        x.IsDeterministic == isDeterministic, ct);
+
+                return winner;
+            }
+        }
+        
+        // （可选）批量写入：显著减少 SaveChanges 次数
+        public async Task AddModelExtractionsAsync(IReadOnlyCollection<ModelExtraction> extractions, CancellationToken ct = default)
+        {
+            if (extractions is null || extractions.Count == 0) return;
+            await using var db = CreateDb();
+
+            await db.ModelExtractions.AddRangeAsync(extractions, ct);
+            await db.SaveChangesAsync(ct);
         }
 
-        public async ValueTask DisposeAsync()
+        private static MedEvalDbContext CreateDb()
         {
-            if (_disposed) return;
-            _disposed = true;
-
-            await _db.DisposeAsync();
-            GC.SuppressFinalize(this);
+            var db = _factory.Value.Create();
+            db.ChangeTracker.QueryTrackingBehavior = QueryTrackingBehavior.NoTracking;
+            return db;
         }
 
         private static void InitializeResolver(ConnectionStringResolver resolver)
         {
             ArgumentNullException.ThrowIfNull(resolver);
 
-            ConnectionStringResolver? existing = Interlocked.CompareExchange(ref _resolver, resolver, null);
+            var existing = Interlocked.CompareExchange(ref _resolver, resolver, null);
             if (existing is null) return;
 
-            // 可选：如果你希望“只能初始化一次且必须完全一致”，可以直接抛
-            // throw new InvalidOperationException("ConnectionStringResolver has already been initialized.");
-
-            // 或者：允许重复调用但要求同一个实例（更利于多处构造但配置一致）
             if (!ReferenceEquals(existing, resolver))
                 throw new InvalidOperationException("ConnectionStringResolver was initialized with a different delegate.");
         }
 
         private static DbContextFactory CreateFactory()
         {
-            ConnectionStringResolver? resolver = Volatile.Read(ref _resolver) ?? throw new InvalidOperationException("ConnectionStringResolver is not initialized.");
-            void configure(DbContextOptionsBuilder<MedEvalDbContext> ob, string cs)
-            {
-                ob.UseSqlServer(cs);
-            }
-
-            MedEvalDbContext activator(DbContextOptions<MedEvalDbContext> options)
-            {
-                return new(options);
-            }
+            var resolver = Volatile.Read(ref _resolver) ?? throw new InvalidOperationException("ConnectionStringResolver is not initialized.");
+            void configure(DbContextOptionsBuilder<MedEvalDbContext> ob, string cs) => ob.UseSqlServer(cs);
+            MedEvalDbContext activator(DbContextOptions<MedEvalDbContext> options) => new(options);
 
             return new DbContextFactory(resolver, configure, activator);
-        }
-
-        private void ThrowIfDisposed()
-        {
-            if (_disposed) throw new ObjectDisposedException(nameof(ExtractionStore));
         }
     }
 }

@@ -12,6 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\MedExtract.Base\MedExtract.Base.csproj" />
     <ProjectReference Include="..\MedExtractEval.Shared\MedExtractEval.Shared.csproj" />
   </ItemGroup>
 

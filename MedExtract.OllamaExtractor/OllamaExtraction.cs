@@ -19,7 +19,7 @@ namespace MedExtract.OllamaExtractor
         /// </summary>
         /// <param name="runResult"></param>
         /// <param name="cancellationToken"></param>
-        public void FromChatRunResultAsync(OllamaChatRunResult runResult, CancellationToken cancellationToken = default)
+        public void FromChatRunResult(OllamaChatRunResult runResult, CancellationToken cancellationToken = default)
         {
             //把整个res json化保存在RawRespones里
             RawResponse = System.Text.Json.JsonSerializer.Serialize(runResult);
